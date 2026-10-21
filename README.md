@@ -1,150 +1,174 @@
-# Claude ↔ Codex Autonomous Loop
+# ccloop
 
-A reusable Codex skill for the loop:
+Give Claude Code or Codex a goal. The active client works toward it, asks the
+other CLI for review, verifies the next milestone, and repeats until the original
+criteria are met or a stopping condition is reached. If a selected participant
+cannot be accessed, use Kimi with the saved goal and evidence.
 
-**Claude Code runs a calculation → Codex checks hourly → reconciles and critically
-reviews the evidence → sends one next prompt → repeats until verified success or
-a stopping condition.**
+| Driver | Reviewer | Reviewer access fallback |
+| --- | --- | --- |
+| Claude Code | Codex | Kimi |
+| Codex | Claude Code | Kimi |
+| Kimi handoff | Claude Code, then Codex | Save checkpoint if neither is available |
 
-Derived from a working convex-hull research workflow. The reusable skill keeps
-its persistent ledger and marked prompts, adding configurable criteria, limits,
-artifact checkpoints and explicit claim/issue reconciliation.
+The skill is [SKILL.md](SKILL.md). A dependency-free Python helper keeps a private
+ledger, original criteria, claim/issue continuity, artifact hashes and actual CLI
+attempts. It is based on the durable controller from the previous desktop loop.
+The current CLI workflow needs no desktop UI or hourly scheduler.
+
+The original package format is retained: `SKILL.md`, `agents/`, `assets/`,
+`references/`, `scripts/` and `tests/`. Private supervisor runs keep `CONTROL.md`,
+`state.json`, numbered review/prompt/observation artifacts, and bounded stopping
+conditions. The CLI transport and model routing extend that existing workflow.
 
 ```mermaid
 flowchart LR
-    C[Claude executes a milestone] --> H[Hourly Codex heartbeat]
-    H --> R[Reconcile UI, artifacts, claims and issues]
-    R --> V[Review and verify results]
-    V --> S{Success or stop?}
-    S -->|continue| P[Save one bounded prompt]
-    P --> D[Record dispatch intent, send once, observe receipt]
-    D --> C
-    S -->|yes| F[Save outcome and pause schedule]
+    D[Claude Code or Codex works toward the goal] --> H[30-minute review checkpoint]
+    H --> R[Reconcile artifacts, claims and open issues]
+    R --> V[Other CLI reviews with its frontier model]
+    V --> S{Goal verified or stop?}
+    V -->|access failure| K[Kimi review]
+    K --> S
+    S -->|continue| P[One bounded next milestone]
+    P --> D
+    S -->|yes| F[Save outcome and stop]
 ```
 
-## Install and start
+## Install
 
-Install this repository's folder as `claude-codex-loop` in your client's skill
-directory. For clients using the current `.agents/skills` convention, from the
-repository root:
+From this repository, link the skill into both clients' personal skill directories:
 
 ```bash
-mkdir -p "$HOME/.agents/skills"
-ln -s "$PWD" "$HOME/.agents/skills/claude-codex-loop"
+python3 - <<'PY'
+from pathlib import Path
+source = Path.cwd().resolve()
+targets = [Path.home()/'.agents/skills/ccloop', Path.home()/'.claude/skills/ccloop']
+for target in targets:
+    if target.is_symlink() and target.resolve() == source:
+        continue
+    if target.exists() or target.is_symlink():
+        raise SystemExit(f'Preserve the existing installation: {target}')
+for target in targets:
+    if not target.is_symlink():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(source, target_is_directory=True)
+PY
 ```
 
-Some clients discover `~/.codex/skills`; use your client's directory. Do not replace
-an existing skill at the destination. Claude does not need the skill installed.
+This preserves existing destinations, including dangling links and directories.
+Use your client's discovery directory if it differs. See the official
+[Codex skill locations](https://developers.openai.com/codex/skills/) and
+[Claude Code skill locations](https://code.claude.com/docs/en/skills).
+Installing the skill starts no goal or background process.
 
-## Set the goal and stopping conditions
+## Set a goal
 
-Specify them in your starting prompt to Codex. The skill saves them in a JSON
-configuration for that run. For example:
+In Codex:
 
-> Use $claude-codex-loop for /work/my-calculation and my existing Claude Code
-> conversation "My calculation," session SESSION_ID. Review every hour and
-> automatically send follow-up prompts. Keep the work within this local project.
->
-> The goal is to produce a rigorous certificate for [precise claim]. Count success
-> only when Codex has checked the certificate against that claim and resolved all
-> blocking objections.
->
-> Stop after 20 follow-up prompts, 48 hours, or 3 consecutive reviews without
-> verified progress, whichever comes first.
+```text
+$ccloop Fix the parser while preserving every existing input format.
+Success requires the integration and regression checks to pass.
+```
 
-Replace the project path, conversation/session and claim with your own. The
-[configuration template](assets/config.example.json) separates:
+In Claude Code:
 
-- `goal`: what you want accomplished.
-- `success_criteria`: what evidence must establish before declaring success.
-- `max_rounds`, `max_hours`, `max_no_progress_reviews`: limits that stop an
-  unfinished run.
+```text
+/ccloop Fix the parser while preserving every existing input format.
+Success requires the integration and regression checks to pass.
+```
 
-The controller checks the numerical limits. Whether the scientific criteria are
-satisfied depends on the recorded review and verification; reaching a limit does
-not count as success. Settings are fixed when a run starts. Editing the original
-configuration file does not alter an active run; use a newly authorized run with
-new settings and preserve the old ledger.
+To pin the **driver** to its frontier model from the terminal:
 
-Codex records the scope and criteria, adopts the current calculation, performs a
-first tick, and creates a same-chat hourly schedule using the available tool.
-Routine rounds need no further confirmation. Installation itself starts nothing.
-See [setup](references/setup.md) for configuration, commands, dependencies and limits.
+```bash
+python3 scripts/launch.py --driver codex --project /work/project \
+  --goal 'Fix the parser while preserving every existing input format'
+python3 scripts/launch.py --driver claude --project /work/project \
+  --goal 'Fix the parser while preserving every existing input format'
+```
 
-## Each round is checked against the original goal
+The launcher checks selected-model access with a small tool-free readiness call,
+then preserves normal interactive CLI permissions for project work. The readiness
+timeout defaults to five minutes. Startup authentication, usage/model-access and
+service failures can use Kimi. `--dry-run` shows the command without calling a
+model. A running session's model is controlled by that client; skill text cannot
+silently change it. Mid-session service failure may require starting Kimi with
+the saved root:
 
-The original goal and fixed success criteria remain the reference throughout the
-run. In each review, Codex checks:
+```bash
+python3 scripts/launch.py --driver kimi --project /work/project \
+  --goal 'The original goal' --root /work/private-supervisor
+```
 
-- What the latest round actually accomplished, using its response and artifacts.
-- Whether that work advances the original goal and what evidence supports each
-  original success criterion.
-- Whether earlier claims or unresolved objections need revisiting in light of
-  the latest results.
+Current defaults, verified 2026-10-20: Claude `claude-fable-5-1` / `max`, Codex
+`gpt-6-astra` / `max`, Kimi `kimi-code/k3` / thinking. Explicit launcher model
+overrides pin a chosen profile; omit them for automatic updates. See
+[model selection and sources](references/models.md).
 
-Completing a milestone does not finish the overall task. The loop declares success
-only when every original success criterion is recorded as met and no blocking
-objections remain open. Earlier claims and objections stay in the record, with
-corrections, retractions and resolutions made explicit.
+## What happens during the loop
 
-The controller enforces the criterion bookkeeping and stopping rules. Codex still
-has to judge whether the evidence supports each conclusion; the controller cannot
-establish scientific correctness from a passing label.
+1. Save the original goal, criteria, scope and bounded limits in a private ledger.
+2. Ask the other CLI to review the plan using supplied source excerpts and evidence.
+3. Work on bounded milestones and review current results every **30 minutes** by
+   default, with an immediate final review when the original goal is established.
+4. Reconcile new findings with prior claims and open objections, then continue.
+5. Perform final verification and final cross-review. Completion requires every
+   original criterion met and no open blocking issue.
 
-## Reconciliation is part of every round
+Authentication, usage/rate limits, unavailable selected models, missing binaries,
+service outages and timeouts may use the designated fallback. Failed tests and
+invalid reviewer reports keep their real failure classification. Requested and
+observed models are recorded separately; unsupported observed-model metadata is
+left unknown. There is no silent smaller-model substitution.
 
-- Compare the ledger with the **actual Claude conversation**, sent marker and final
-  response. Never infer completion from an inactive file or a handoff's PASS label.
-- Hash selected inputs, code and outputs. If files change after review, require a
-  fresh review before sending the next prompt.
-- Link each review to its predecessor by hash. Carry forward every claim and issue
-  ID, recording corrections, retractions and resolutions explicitly.
-- Require evidence for every success criterion; an open blocking issue prevents
-  success. A budget limit is recorded as an incomplete stop.
-- Freeze prompt text and persist `submitting` before touching the UI. Recover an
-  uncertain submission by observing its marker. Never replay it blindly.
-- Use leases and atomic local writes to coordinate overlapping or interrupted ticks.
+The strongest model profile refreshes automatically from official metadata and
+local model lists. Updates retain the original goal and remaining budget; an
+unavailable metadata source keeps the last verified profile with a warning.
+Reviewer selection refreshes during the run; a driver update takes effect when
+the client next launches or hands off. CLI binaries are not upgraded automatically.
 
-This is a cooperative workflow with crash recovery. It cannot establish truth from
-two model opinions, guarantee exactly-once UI delivery, sandbox project code, or
-enforce dollar budgets. Its drift coverage is limited to configured watched files.
+Use [the config template](assets/ccloop.config.example.json) and
+[CLI protocol](references/cli-protocol.md) for setup, packets, reports, stop/resume
+and handoff commands. Defaults are 12 consultation rounds, two hours, three
+no-progress milestone reviews, a 300-second consultation timeout, and a 30-minute
+review interval. The active client honors due-review status; this does not create
+a background scheduler.
 
-## Requirements and current validation
+```bash
+python3 scripts/ccloop.py doctor
+python3 scripts/ccloop.py --root /work/private-supervisor init --config /work/run.json
+python3 scripts/ccloop.py --root /work/private-supervisor consult \
+  --packet /work/private-supervisor/plan.json --stage plan
+python3 scripts/ccloop.py --root /work/private-supervisor status
+```
 
-The desktop workflow needs a same-chat scheduling tool, supported computer use
-that can operate Claude's UI, authenticated Claude Code/Codex sessions, and Python
-3.10+ on macOS/Linux. Keep the local host and desktop app running. This repository
-does not install those tools, introduce an API runner, or bypass approvals/logins.
-Availability varies by client. [Official scheduling documentation](https://learn.chatgpt.com/codex/automations)
-describes same-chat schedules and local-host requirements.
+## Requirements and limits
 
-The source workflow has run on a real convex-hull project. The generalized
-controller is validated with isolated, simulated UI observations and temporary
-projects, covering interrupted sends, concurrent ownership, drift, stale evidence,
-claim continuity and stopping behavior. This is not an end-to-end demonstration
-on every desktop client. Tests never send a live Claude prompt.
+Python 3.10+ on Linux/macOS (or Linux under WSL), and authenticated Claude Code,
+Codex and Kimi CLIs. Python 3.11+ is recommended for Kimi's TOML preflight. Account
+model entitlements and existing service limits apply. No account or paid-usage
+settings are changed by the helper.
 
-Local validation on 2026-10-17: **28 tests passed** on macOS with Python 3.14.6,
-and the Codex skill validator passed. GitHub Actions is configured for macOS/Linux
-with Python 3.10/3.12; those CI jobs have not yet run for this repository.
+The active client runs the work. Closing it does not leave an autonomous service
+running. Two model opinions are not a correctness proof. The driver still checks
+the evidence, normal project permissions apply, and watch globs define artifact
+drift coverage. Reviewers receive frozen packets outside the project with no
+editing role; Kimi hooks/plugins that could add tools are rejected.
+
+The old UI workflow is archived as [the legacy desktop skill](references/legacy-desktop/SKILL.md).
+Its [controller](scripts/control.py), [protocol](references/protocol.md), and
+existing ledger format remain available. Use a new supervisor root for ccloop.
+
+## Verification
 
 ```bash
 python3 -m unittest discover -s tests -v
+uv run --no-project --with pyyaml python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 
-## Package contents
+Integration tests use temporary fake CLI executables to verify routing, report
+validation, fallback, budgets, model handling and interruption behavior. They do
+not submit live project work. Real service access must be distinguished from
+authentication and simulated test results.
 
-| File | Purpose |
-| --- | --- |
-| [SKILL.md](SKILL.md) | Codex entry point and autonomous tick procedure |
-| [scripts/control.py](scripts/control.py) | Dependency-free persistent state controller |
-| [references/setup.md](references/setup.md) | Installation, configuration, portability and limits |
-| [references/protocol.md](references/protocol.md) | Commands, evidence formats and recovery |
-| [assets](assets) | Config, review and next-prompt templates |
-| [tests](tests) | Isolated controller integration tests |
-
-Runtime state belongs in a private supervisor directory outside Claude's project
-and outside this skill repository. Do not publish actual transcripts, identifiers,
-prompts, credentials or research artifacts with the reusable package.
-
-Licensed under the [MIT License](LICENSE).
+Runtime state, actual prompts, transcripts and artifacts belong outside this
+repository. Licensed under the [MIT License](LICENSE).

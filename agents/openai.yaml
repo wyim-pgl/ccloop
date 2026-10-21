@@ -1,3 +1,4 @@
 interface:
-  display_name: "Claude–Codex Loop"
-  short_description: "Autonomous Claude work with Codex review"
+  display_name: "ccloop"
+  short_description: "Claude–Codex cross-review with Kimi fallback"
+  default_prompt: "Use $ccloop to work toward my goal with frontier-model cross-review and Kimi access fallback."

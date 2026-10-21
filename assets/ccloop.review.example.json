@@ -1,0 +1,18 @@
+{
+  "round": 1,
+  "previous_review_sha256": null,
+  "artifact_sha256": "Copy the artifact hash supplied in the consultation envelope",
+  "summary": "What the supplied evidence establishes toward the original goal.",
+  "reconciliation": "Compare the current packet, previous review, all claims and unresolved issues; explain corrections.",
+  "progress": false,
+  "checks": [
+    {"method": "An actual check or inspection described in the packet", "result": "Its observed result and limits", "evidence": "Source path and supplied excerpt/result"}
+  ],
+  "criteria": {
+    "deliverable": {"status": "not_met", "evidence": "Remaining obligation toward the original deliverable"},
+    "verification": {"status": "unknown", "evidence": "Missing or inconclusive verification"}
+  },
+  "claims": [],
+  "issues": [],
+  "next_milestone": "One bounded next action toward an unresolved original criterion"
+}
