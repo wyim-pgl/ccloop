@@ -45,9 +45,14 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    CLIs; there is no desktop UI or scheduler dependency. Missing primary CLI
    access may use Kimi; missing Kimi access is a reported blocker.
 4. Read [CLI protocol](references/cli-protocol.md). Create a private supervisor
-   directory outside the project and skill, and initialize from
+   directory outside the project and skill, normally under
+   `$XDG_STATE_HOME/ccloop/` or `~/.local/state/ccloop/` with a unique run folder,
+   so temporary-directory cleanup does not remove the journal. Initialize from
    [the config template](assets/ccloop.config.example.json). For an existing run,
    inspect `status` and resume its records rather than resetting them.
+   Keep its `journal_path`: the helper automatically maintains the private
+   `ccloop.md` question/answer journal. Read [journal recording](references/journal.md)
+   before the first driver decision or work checkpoint.
 
 ## Work, ask, verify, continue
 
@@ -58,6 +63,9 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
 2. Assess the objections against the original goal. Repair invalid assumptions
    before expanding the work. The reviewer gives advice; the driver remains
    responsible for deciding, implementing and verifying the next bounded step.
+   Record the choice before acting, then append the actual actions and checks
+   using the journal's `record` command; reference the originating consultation
+   round explicitly, including when newer questions have since been answered.
    When a question would otherwise interrupt work, use **Ask the other model**
    below immediately, then act on a justified answer and continue.
 3. Review progress every **30 minutes by default**. Read `review_due` and
@@ -81,6 +89,8 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    consult with `--stage final`. Finish only when the helper records `complete`:
    every original criterion is met with evidence and no blocking issue is open.
    A plan or milestone completion does not finish the overall goal.
+   Before ending, append the final work, verification results and user-facing
+   conclusion to the journal, and give the user its absolute `journal_path`.
 
 Record checkpoints often enough that another participant can continue from the
 last verified work. This is an active-session loop, not a background scheduling
@@ -106,7 +116,10 @@ python3 /path/to/ccloop/scripts/ccloop.py --root /private/run ask \
 The helper routes the question through the same frontier-model/Kimi policy and
 records the answer, rationale and assumptions in `last_decision` and the ledger.
 Evaluate the answer against the original goal, choose an authorized action,
-record why and execute it. If the peer needs technical clarification, obtain the
+record why in `ccloop.md` through `record --after-round ROUND --entry FILE`,
+then execute it and record the actual outcome. Use the returned decision's round;
+the helper does not infer which answer a delayed work entry belongs to.
+If the peer needs technical clarification, obtain the
 missing evidence or send a focused follow-up question to the peer. Resolve
 ordinary disagreements with a reversible choice and an actual check.
 

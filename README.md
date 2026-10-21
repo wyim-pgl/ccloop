@@ -22,6 +22,14 @@ The original package format is retained: `SKILL.md`, `agents/`, `assets/`,
 `state.json`, numbered review/prompt/observation artifacts, and explicit stopping
 conditions. The CLI transport and model routing extend that existing workflow.
 
+Each run also saves a private **`ccloop.md`** timeline: what was asked, the exact
+context sent, which provider/model was requested and actually observed, its
+answer, fallback/failure outcomes, and the driver's choice, subsequent work and
+actual checks. The helper captures consultations automatically; the skill adds
+driver checkpoints with `record --after-round ROUND --entry FILE`.
+`status` shows the absolute `journal_path`. See [journal recording](references/journal.md)
+and [the work entry example](assets/ccloop.work.example.json).
+
 ```mermaid
 flowchart LR
     D[Claude Code or Codex works toward the goal] --> H[30-minute review checkpoint]

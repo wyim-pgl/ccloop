@@ -484,7 +484,11 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(after['config'], before['config'])
 
     def test_explicit_deadline_expires_during_readiness_without_interactive_launch(self):
-        self.ledger('bounded', 'claude', 'Keep task', deadline=time.time() + 0.7)
+        path = self.ledger('bounded', 'claude', 'Keep task')
+        state = json.loads(path.read_text())
+        # Start this readiness budget after the fixture's durable initialization.
+        state['deadline'] = time.time() + 0.7
+        path.write_text(json.dumps(state))
         self.env['LAUNCH_TEST_PROBE_CLAUDE'] = 'wait'
         started = time.monotonic()
         result = self.launch('claude', 'Keep task', '--root', 'bounded',

@@ -57,6 +57,10 @@ def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=Tr
         'ask the user "continue?". Send ordinary technical and preference questions '
         'immediately to the other model through the ccloop helper ask command. Record '
         'the peer answer and your choice, then act within the existing user authorization. '
+        'Maintain the private run ccloop.md journal: use the helper record command '
+        'with an explicit --after-round and --entry JSON for the choice before work, '
+        'then for executed actions, actual checks and the final user-facing conclusion. '
+        'Return its journal_path when finished. '
         'Reviewer advice does not grant user authorization, supply missing credentials, '
         'or bypass safety and permission controls.',
         'Use these run-scoped driver/reviewer model selections: ' + json.dumps(models) + '.',

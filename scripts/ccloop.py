@@ -16,6 +16,7 @@ import time
 from types import SimpleNamespace
 
 import control
+import journal
 import providers
 
 
@@ -77,8 +78,11 @@ def read(root):
 def commit(root, s, action, **details):
     s['revision'] += 1
     s['history'].append(dict(at=time.time(), action=action, revision=s['revision'],
-                             round=s['round'], phase=s['phase'], **details))
+                             round=s['round'], phase=s['phase'], active_driver=s['active_driver'],
+                             driver_requested_model=s.get('active_models', s['config']['models'])[s['active_driver']],
+                             **details))
     control.atomic_json(root / 'state.json', s)
+    journal.write(root, s)
 
 
 def halt(s, reason, kind):
@@ -130,6 +134,10 @@ def heartbeat(root, s):
             'until the original criteria are verified complete, a user stop, an explicit exhausted '
             'budget, or a genuine blocker. Resolve ordinary implementation questions by running '
             f'{ask_command}, optionally adding --context FILE, then use last_decision to continue '
+            f'authorized work. Preserve {root / "ccloop.md"}; use the helper record command '
+            'with --after-round ROUND --entry FILE for the originating decision, actual actions, '
+            'checks and final user-facing conclusion. Record the choice before work and the '
+            'outcome afterward. Continue '
             'authorized work without routine human confirmation. Peer advice is not authorization '
             'or completion evidence; requires_user_input is advisory. Ask the user only for actual '
             'missing credentials, required authorization, or an indispensable decision. '
@@ -284,6 +292,8 @@ def initialize(root, config):
     with locked(root):
         require(not (root / 'state.json').exists(), 'Ledger already exists; init never resets it')
         require(not (root / 'CONTROL.md').exists(), 'CONTROL.md exists; choose a fresh ledger root')
+        require(not (root / 'ccloop.md').exists() and not (root / 'ccloop.md').is_symlink(),
+                'ccloop.md exists; choose a fresh ledger root')
         for folder in ('reviews', 'prompts', 'observations'):
             (root / folder).mkdir(mode=0o700, exist_ok=True)
         (root / 'CONTROL.md').write_text(
@@ -357,6 +367,38 @@ def ask(root, question, context_path=None):
     return dispatch(root, packet, 'question', question)
 
 
+def record_work(root, entry_path, after_round):
+    """Save reported work without promoting it into reviewer evidence or completion."""
+    require(not os.environ.get('CCLOOP_CONSULTANT') and not os.environ.get('CCLOOP_REVIEWER'),
+            'Consultants cannot record driver work')
+    entry = control.load(entry_path)
+    require(isinstance(entry, dict) and set(entry) == {'summary', 'decision', 'actions', 'checks'},
+            'Work entry needs exactly summary, decision, actions, checks')
+    require(all(control.nonempty(entry[key]) for key in ('summary', 'decision')),
+            'Work summary and decision must be nonempty text')
+    require(isinstance(entry['actions'], list) and all(control.nonempty(x) for x in entry['actions']),
+            'Work actions must be a list of nonempty text')
+    require(isinstance(entry['checks'], list) and all(isinstance(check, dict)
+            and set(check) == {'method', 'result', 'evidence'}
+            and all(control.nonempty(value) for value in check.values()) for check in entry['checks']),
+            'Work checks need method, result and evidence text')
+    with locked(root):
+        s = read(root)
+        require(not s.get('pending'), 'Cannot record work during an in-flight consultation')
+        origin = next((event for event in s['history'] if event['round'] == after_round
+                       and event['action'] in {'decision', 'review'}), None)
+        require(after_round == 0 or origin is not None,
+                '--after-round must be 0 or the round of an accepted decision/review')
+        response = origin[origin['action']] if origin else {}
+        checkpoint = control.snapshot(s)
+        commit(root, s, 'work', entry=entry,
+               consultation_round=after_round,
+               consultation_attempt_id=origin.get('attempt_id') if origin else None,
+               consultation_artifact_sha256=response.get('artifact_sha256'),
+               artifact_sha256=checkpoint['sha256'])
+    return s
+
+
 def dispatch(root, packet, stage, question=None):
     """Share single-flight, frozen context, cancellation, and fallback across peer requests."""
     require(not os.environ.get('CCLOOP_CONSULTANT') and not os.environ.get('CCLOOP_REVIEWER'),
@@ -415,7 +457,8 @@ def dispatch(root, packet, stage, question=None):
         route = {'claude': ['codex', 'kimi'], 'codex': ['claude', 'kimi'],
                  'kimi': ['claude', 'codex']}[s['active_driver']]
         commit(root, s, 'ask' if deciding else 'consult', token=token, stage=stage,
-               packet_path=str(prompt_path), **({'question': question} if deciding else {}))
+               packet_path=str(prompt_path), packet_sha256=s['pending']['packet_sha256'],
+               **({'question': question} if deciding else {}))
     prompt = json.dumps(envelope, ensure_ascii=False)
     for index, provider in enumerate(route):
         attempt_id = f'{token}-{provider}'
@@ -463,6 +506,10 @@ def dispatch(root, packet, stage, question=None):
 
         details, report = providers.invoke(provider, config, prompt, directory / provider,
                                             timeout, cancelled, started)
+        if report is None and details.get('stdout_path'):
+            # Native logs are only flushed by the transport. Preserve failed raw
+            # replies in the fsynced ledger so view recovery does not depend on them.
+            details['raw_stdout'] = journal.artifact(root, details['stdout_path'], raw=True)
         suffix = '.decision.json' if deciding else '.json'
         report_path = root / 'reviews' / f'{stem}-{provider}{suffix}'
         if report is not None:
@@ -536,6 +583,11 @@ def main(argv=None):
     commands.add_parser('doctor', help='Inspect executable availability without model requests')
     commands.add_parser('init').add_argument('--config', required=True, type=Path)
     commands.add_parser('status')
+    commands.add_parser('journal', help='Rebuild the private ccloop.md from saved run records')
+    work = commands.add_parser('record', help='Record driver decisions, executed actions and actual checks')
+    work.add_argument('--entry', required=True, type=Path, help='JSON: summary, decision, actions, checks')
+    work.add_argument('--after-round', required=True, type=int,
+                      help='Originating accepted question/review round, or 0 for unassociated work')
     commands.add_parser('heartbeat', help='Print a durable same-goal prompt; does not schedule execution')
     models = commands.add_parser('models', help='Show the active model profile and its public metadata evidence')
     models.add_argument('--refresh', action='store_true', help='Refresh metadata now; selection follows auto_update_models')
@@ -573,6 +625,8 @@ def main(argv=None):
             s, ok = consult(root, args.packet, args.stage)
         elif args.action == 'ask':
             s, ok = ask(root, args.question, args.context)
+        elif args.action == 'record':
+            s = record_work(root, args.entry, args.after_round)
         elif args.action in {'stop', 'resume', 'handoff'}:
             s = change_state(root, args.action, args.reason, getattr(args, 'driver', None))
         elif args.action == 'models' and args.refresh:
@@ -580,10 +634,12 @@ def main(argv=None):
         else:
             with locked(root):
                 s = read(root)
+                journal.write(root, s)
         if args.action == 'heartbeat':
             print(heartbeat(root, s))
             return 0
         result = summary(s)
+        result['journal_path'] = str(root / 'ccloop.md')
         if args.action == 'status':
             result['reconciliation'] = control.reconciliation(s)
         print(json.dumps(result, indent=2, ensure_ascii=False))

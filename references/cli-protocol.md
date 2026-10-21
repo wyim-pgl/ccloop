@@ -15,7 +15,11 @@ python3 scripts/ccloop.py --root /work/private-supervisor consult \
 Create `run.json` from [the template](../assets/ccloop.config.example.json).
 The original configuration, goal and criteria are frozen in the ledger. The
 supervisor retains the original layout: `CONTROL.md`, `state.json`, `reviews/`,
-`prompts/` and `observations/`. New runs are continuous by default: `max_rounds`,
+`prompts/` and `observations/`, with an additional private `ccloop.md` journal.
+`status` exposes its `journal_path`. Requests, model attempts and replies are
+recorded automatically; follow [journal recording](journal.md) to append the
+driver's choice, work, actual checks and final conclusion with
+`record --after-round ROUND --entry FILE`. New runs are continuous by default: `max_rounds`,
 `max_hours` and `max_no_progress_reviews` are `null`, meaning no automatic cap.
 Positive values explicitly supplied by the user still impose their respective
 limits; existing ledgers retain their recorded numeric caps. The per-call timeout
