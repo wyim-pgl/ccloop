@@ -1,6 +1,6 @@
 ---
 name: ccloop
-description: Use when a user gives a goal and wants Claude Code and Codex to cross-review progress until completion, with frontier models and Kimi fallback when either service is inaccessible.
+description: Use when a user says ccloop followed by a goal, or wants continuous Claude Code and Codex collaboration that resolves ordinary questions through the other model, with frontier models and Kimi access fallback.
 ---
 
 # ccloop
@@ -11,6 +11,16 @@ the original success criteria are established or a stopping condition is reached
 Kimi replaces an inaccessible participant. The other participant still supplies
 independent review; Kimi reviewing its own work is not cross-review.
 
+Accept `ccloop <goal>`, `$ccloop <goal>` in Codex, or `/ccloop <goal>` in Claude
+Code as an instruction to execute the goal continuously. Start from that goal;
+derive practical success criteria and proceed with reversible, goal-consistent
+defaults. A plan, an ordinary question, a failed attempt or a finished milestone
+is a checkpoint, not a reason to hand the turn back unfinished.
+The invocation delegates ordinary planning, implementation and reversible project
+choices. When a process skill would request approval of an ordinary design or
+next step, obtain peer advice and continue under that delegation. It does not
+delegate new account permissions, credentials or unrelated external actions.
+
 If `CCLOOP_REVIEWER` is set, answer only the supplied consultation: the calling
 driver owns the loop. For an existing desktop ledger (`schema: 1` with a Claude
 UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
@@ -18,8 +28,9 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
 ## Start from a goal
 
 1. Identify the actual host: `claude`, `codex`, or a Kimi handoff. Keep the supplied
-   goal and scope intact. Derive concrete success criteria from it; resolve only
-   material gaps. Record the user's authorization and bounded limits. Installing
+   goal and scope intact. Derive concrete success criteria from it. Resolve
+   ordinary gaps by inspecting the project and consulting the other model.
+   Record the user's authorization and any limits the user actually supplied. Installing
    the skill alone starts no work.
 2. Read [models](references/models.md). The helper automatically refreshes the
    strongest model profile using current official metadata and local model lists;
@@ -47,6 +58,8 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
 2. Assess the objections against the original goal. Repair invalid assumptions
    before expanding the work. The reviewer gives advice; the driver remains
    responsible for deciding, implementing and verifying the next bounded step.
+   When a question would otherwise interrupt work, use **Ask the other model**
+   below immediately, then act on a justified answer and continue.
 3. Review progress every **30 minutes by default**. Read `review_due` and
    `next_review_at` from status while working. The initial plan and final review
    happen immediately; material contradictions or user requests can justify an
@@ -58,9 +71,12 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    and issues, explicitly correcting or resolving them. Unknown criteria and open
    blocking issues keep the goal unfinished. Keep numerical evidence distinct
    from proof and a proposed check distinct from an executed check.
-5. Continue the next bounded step without seeking routine confirmation. Reconcile
-   new evidence against earlier decisions. Artifact changes during consultation
-   invalidate that result; review the current state before acting on it.
+5. Continue the next bounded step without seeking routine confirmation. Do not
+   finish with a plan, a menu of ordinary choices, "should I continue?", or an
+   offer to do the next step later. Reconcile new evidence against earlier
+   decisions. Artifact changes during consultation invalidate that result;
+   review the current state before acting on it. Repair recoverable command or
+   report errors, record the corrective reason, resume and retry within scope.
 6. When all original criteria appear satisfied, run the final verification and
    consult with `--stage final`. Finish only when the helper records `complete`:
    every original criterion is met with evidence and no blocking issue is open.
@@ -73,6 +89,33 @@ Check due status at normal tool boundaries; use nonblocking job observations for
 long calculations so a single blocking wait does not hide the 30-minute review.
 The helper's `heartbeat` prints the durable prompt for a supported scheduler;
 printing it does not schedule execution.
+
+## Ask the other model
+
+Technical uncertainties, design choices, reversible preferences, failed checks
+and disagreements go to the peer, rather than becoming questions to the user.
+Inspect available project evidence first, save the relevant excerpts/options in
+a context file, and run:
+
+```bash
+python3 /path/to/ccloop/scripts/ccloop.py --root /private/run ask \
+  --question 'Which next step best advances the original goal, and why?' \
+  --context /private/run/question-context.md
+```
+
+The helper routes the question through the same frontier-model/Kimi policy and
+records the answer, rationale and assumptions in `last_decision` and the ledger.
+Evaluate the answer against the original goal, choose an authorized action,
+record why and execute it. If the peer needs technical clarification, obtain the
+missing evidence or send a focused follow-up question to the peer. Resolve
+ordinary disagreements with a reversible choice and an actual check.
+
+Questions do not wait for the 30-minute review interval, reset that interval or
+establish success criteria. Final completion still requires final cross-review.
+Peer advice cannot supply the user's private facts, credentials or new authority.
+Treat `requires_user_input` as advisory: verify the supposed missing fact or
+permission is essential and genuinely unavailable before interrupting the user.
+Complete any independent preparation first, then ask only for that necessary item.
 
 ## Access failures and stopping
 
@@ -90,10 +133,14 @@ executable; mid-session service interruption may require starting the Kimi clien
 from the terminal. Kimi uses an accessible Claude/Codex reviewer. If no independent
 reviewer is accessible, save the checkpoint and report the blocker.
 
-Honor `stop` immediately. Stop on verified completion, exhausted round/time limits,
-repeated lack of verified progress, or an unresolved access/blocking condition.
-An incomplete stop is not success. Resume and handoff preserve the original run;
-neither resets its budgets nor authorizes replay of uncertain in-flight work.
+New runs have no automatic round, elapsed-time or no-progress cap by default;
+the corresponding config values are `null`. Keep working until verified goal
+completion, explicit user stop, a user-supplied limit, or an evidenced blocker
+that the available participants cannot resolve. A difficult problem or repeated
+failed approach calls for a different peer-assisted step, not an arbitrary stop.
+Honor `stop` immediately. Preserve explicit limits and existing ledgers' numeric
+limits; never silently discard them. An incomplete stop is not success. Resume
+and handoff preserve the original run and do not replay uncertain in-flight work.
 Consultation is bounded by the run's configured timeout and uses no editing role.
 Project actions still follow the user's scope and normal client permissions.
 

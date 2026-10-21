@@ -51,6 +51,14 @@ def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=Tr
         start,
         f'Act as the interactive {driver} driver and carry out the goal below. '
         'Obtain independent reviews at the plan, milestone, and final gates.',
+        'Continue autonomously until the original goal is verified complete, the user '
+        'explicitly stops, an explicit user budget is exhausted, or required authorization '
+        'or credentials cannot be obtained. Do not end the turn after one milestone or '
+        'ask the user "continue?". Send ordinary technical and preference questions '
+        'immediately to the other model through the ccloop helper ask command. Record '
+        'the peer answer and your choice, then act within the existing user authorization. '
+        'Reviewer advice does not grant user authorization, supply missing credentials, '
+        'or bypass safety and permission controls.',
         'Use these run-scoped driver/reviewer model selections: ' + json.dumps(models) + '.',
         'Use max reasoning effort for Claude and Codex, and thinking for Kimi. '
         'Record the requested and observed models separately; do not silently '
@@ -68,7 +76,9 @@ def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=Tr
     else:
         instructions.append(
             'Create a private ccloop ledger outside the project and record its '
-            'path and model selections before substantial work. Initialize its '
+            'path and model selections before substantial work. Honor explicit user '
+            'limits; otherwise leave max_rounds, max_hours, and max_no_progress_reviews '
+            'unlimited (null). Do not invent time, round, or no-progress caps. Initialize its '
             'model settings with ' + json.dumps({'models': models,
                                                 'auto_update_models': auto_update_models}) + '. '
             + ('Keep automatic model updates enabled for this default profile.'
@@ -165,7 +175,7 @@ def read_run(args, root, overrides, driver, expected=None):
     ccloop.require(state.get('phase') not in ('stopped', 'complete'),
                    'Ledger is stopped or complete; the launcher cannot resume it')
     ccloop.require(not state.get('pending'), 'Ledger consultation is in flight')
-    exhausted = ccloop.control.limit(state)
+    exhausted = ccloop.limit(state)
     ccloop.require(not exhausted, 'Ledger budget exhausted: ' + str(exhausted))
     if not state.get('enabled') or state.get('phase') != 'ready':
         message = 'Ledger is blocked; explicitly reconcile it before launching'
@@ -225,7 +235,7 @@ def interactive(args, models, root, overrides, state, plan):
         if root:
             state, _ = read_run(args, root, overrides, driver, expected=state)
         timeout = args.access_timeout
-        if state is not None:
+        if state is not None and state['deadline'] is not None:
             timeout = min(timeout, max(0.001, state['deadline'] - time.time()))
 
         def cancelled():
@@ -282,9 +292,13 @@ def main(argv=None):
         epilog='CCLOOP_CLAUDE_BIN, CCLOOP_CODEX_BIN, and CCLOOP_KIMI_BIN may each '
                'name one executable path; they are never interpreted as shell commands.',
     )
-    parser.add_argument('--driver', required=True, choices=tuple(MODELS))
-    parser.add_argument('--project', required=True, type=Path)
-    parser.add_argument('--goal', required=True)
+    parser.add_argument('goal_words', nargs='*', metavar='GOAL',
+                        help='Goal text; quote it to preserve whitespace verbatim')
+    parser.add_argument('--driver', default='codex', choices=tuple(MODELS),
+                        help='Interactive driver (default: codex)')
+    parser.add_argument('--project', default=Path.cwd(), type=Path,
+                        help='Project directory (default: current directory)')
+    parser.add_argument('--goal', help='Verbatim goal text instead of a positional goal')
     parser.add_argument('--root', type=Path, help='Existing private ledger to resume')
     for driver in MODELS:
         parser.add_argument('--' + driver + '-model')
@@ -295,6 +309,12 @@ def main(argv=None):
     parser.add_argument('--dry-run', action='store_true',
                         help='Print a JSON launch plan without calling any CLI')
     args = parser.parse_args(argv)
+    if args.goal is not None and args.goal_words:
+        parser.error('provide either a positional goal or --goal, not both')
+    if args.goal is None:
+        args.goal = ' '.join(args.goal_words)
+    if not args.goal.strip():
+        parser.error('goal must not be empty')
     args.project = args.project.expanduser().resolve()
     if not args.project.is_dir():
         parser.error(f'project directory does not exist: {args.project}')

@@ -1,4 +1,4 @@
 interface:
   display_name: "ccloop"
-  short_description: "Claude–Codex cross-review with Kimi fallback"
-  default_prompt: "Use $ccloop to work toward my goal with frontier-model cross-review and Kimi access fallback."
+  short_description: "Continuous peer-assisted work toward your goal"
+  default_prompt: "Use $ccloop to finish my goal continuously, ask the other model ordinary questions, and verify completion."

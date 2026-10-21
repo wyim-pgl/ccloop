@@ -28,6 +28,22 @@ sys.modules['model_updates'] = metadata
 import ccloop
 sys.exit(ccloop.main(sys.argv[1:]))
 '''
+CLOCK_WRAPPER = '''import os, sys
+sys.path.insert(0, sys.argv.pop(1))
+import ccloop
+original_snapshot = ccloop.control.snapshot
+original_time = ccloop.time.time
+snapshots = 0
+def snapshot(state):
+    global snapshots
+    result = original_snapshot(state)
+    snapshots += 1
+    if snapshots == int(os.environ['CCLOOP_TEST_EXPIRE_SNAPSHOT']):
+        ccloop.time.time = lambda: original_time() + 3 * 3600
+    return result
+ccloop.control.snapshot = snapshot
+sys.exit(ccloop.main(sys.argv[1:]))
+'''
 FAKE = r'''import json, os, pathlib, subprocess, sys, time
 provider = sys.argv[1]
 args = sys.argv[2:]
@@ -81,6 +97,13 @@ report = {'round': packet['round'], 'artifact_sha256': packet['artifact_sha256']
           'criteria': {x['id']: {'status': settings.get('criterion', 'not_met'), 'evidence': 'packet.evidence'} for x in packet['success_criteria']},
           'claims': prior.get('claims', [{'id': 'c1', 'statement': 'Fixture is supplied', 'status': 'accepted', 'evidence': 'packet.evidence'}]),
           'issues': prior.get('issues', []), 'next_milestone': 'Verify result or finish'}
+if packet.get('stage') == 'question':
+    report = {'round': packet['round'], 'artifact_sha256': packet['artifact_sha256'],
+              'previous_review_sha256': packet['previous_review_sha256'], 'question': packet['question'],
+              'answer': settings.get('answer', 'Use the supplied fixture result.'),
+              'rationale': 'The supplied context supports this implementation choice.',
+              'assumptions': ['The original authorization remains in force.'],
+              'requires_user_input': False, 'user_input_reason': ''}
 report.update(settings.get('report', {}))
 model = settings.get('observed_model', args[args.index('--model')+1])
 if provider == 'claude':
@@ -161,6 +184,9 @@ class CLIBase(unittest.TestCase):
     def consult(self, stage='milestone', **kwargs):
         return self.call('consult', packet=self.packet, stage=stage, **kwargs)
 
+    def ask(self, question='Which fixture should I use?', **kwargs):
+        return self.call('ask', question=question, **kwargs)
+
     def state(self):
         return json.loads((self.root / 'state.json').read_text())
 
@@ -168,9 +194,10 @@ class CLIBase(unittest.TestCase):
         path = self.base / 'calls.jsonl'
         return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
 
-    def start_waiting(self, mode='wait'):
+    def start_waiting(self, mode='wait', action='consult'):
         self.settings('codex', mode=mode)
-        child = subprocess.Popen(self.command('consult', packet=self.packet, stage='final'),
+        flags = {'packet': self.packet, 'stage': 'final'} if action == 'consult' else {'question': 'Which fixture?'}
+        child = subprocess.Popen(self.command(action, **flags),
             env=self.env, cwd=self.base, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: child.kill() if child.poll() is None else None)
         end = time.monotonic() + 5
@@ -402,6 +429,46 @@ class ConsultationTest(CLIBase):
         self.consult(ok=False)
         self.assertEqual(len(self.calls()), 2)
 
+    def test_continuous_defaults_survive_previous_round_time_and_no_progress_caps(self):
+        for key in ('max_rounds', 'max_hours', 'max_no_progress_reviews'):
+            self.config.pop(key)
+        self.init()
+        saved = self.state()
+        saved['created_at'] -= 3 * 3600
+        if saved['deadline'] is not None:
+            saved['deadline'] -= 3 * 3600
+        (self.root / 'state.json').write_text(json.dumps(saved))
+        self.settings('codex', progress=False)
+        for _ in range(14):
+            result = self.consult()
+            self.assertEqual(result['phase'], 'ready')
+        self.assertEqual(result['round'], 14)
+        self.assertEqual(result['no_progress_reviews'], 14)
+        self.assertIsNone(result['deadline'])
+        self.assertIsNone(result['dispatch_limit'])
+        for key in ('max_rounds', 'max_hours', 'max_no_progress_reviews'):
+            self.assertIsNone(result['config'][key])
+        self.call('stop', reason='User stopped continuous work')
+        self.call('resume', reason='User resumed the same goal')
+        handed = self.call('handoff', driver='codex', reason='Continue the same goal')
+        self.assertIsNone(handed['deadline'])
+        self.assertEqual(handed['round'], 14)
+        self.assertEqual(handed['no_progress_reviews'], 14)
+
+    def test_explicit_null_caps_accept_review_and_preserve_frozen_config(self):
+        initialized = self.init(max_rounds=None, max_hours=None, max_no_progress_reviews=None)
+        result = self.consult()
+        self.assertEqual(result['phase'], 'ready')
+        self.assertEqual(result['config'], initialized['config'])
+        self.assertIsNone(result['deadline'])
+
+    def test_invalid_numeric_caps_are_still_rejected(self):
+        for key, value in [('max_rounds', 0), ('max_rounds', 1.5), ('max_hours', -1),
+                           ('max_hours', True), ('max_no_progress_reviews', False)]:
+            with self.subTest(key=key, value=value):
+                self.call('init', config=self.write('bad-config.json', dict(self.config, **{key: value})), ok=False)
+                self.assertFalse((self.root / 'state.json').exists())
+
     def test_round_limit_is_enforced_even_with_progress(self):
         self.init(max_rounds=1)
         s = self.consult()
@@ -416,6 +483,29 @@ class ConsultationTest(CLIBase):
         self.assertEqual(self.state()['phase'], 'blocked')
         self.assertEqual(self.state()['failure_kind'], 'limit')
         self.assertEqual(self.calls(), [])
+
+    def test_deadline_expiring_during_snapshot_prevents_dispatch_and_final_acceptance(self):
+        for stage, expire_snapshot in [('question', 2), ('final', 5)]:
+            with self.subTest(stage=stage):
+                self.root = self.base / ('expiry-' + stage)
+                self.env['CCLOOP_TEST_ROOT'] = str(self.root)
+                self.init()
+                self.script = self.base / 'clock_cli.py'
+                self.script.write_text(CLOCK_WRAPPER)
+                self.script_args = [str(SCRIPT.parent)]
+                self.env['CCLOOP_TEST_EXPIRE_SNAPSHOT'] = str(expire_snapshot)
+                self.settings('codex', criterion='met')
+                if stage == 'question':
+                    self.ask(ok=False)
+                    self.assertEqual(self.state()['attempts'], [])
+                    self.assertEqual(self.calls(), [])
+                else:
+                    self.consult(stage='final', ok=False)
+                saved = self.state()
+                self.assertEqual(saved['phase'], 'blocked')
+                self.assertEqual(saved['failure_kind'], 'limit')
+                self.assertIsNone(saved.get('last_review'))
+                self.assertIsNone(saved.get('last_decision'))
 
     def test_single_flight_and_stop_resume_reject_old_result(self):
         self.init()
@@ -537,6 +627,147 @@ class ConsultationTest(CLIBase):
         self.env['CCLOOP_REVIEWER'] = '1'
         self.consult(ok=False)
         self.assertEqual(self.calls(), [])
+
+
+class DecisionTest(CLIBase):
+    def test_question_then_project_work_then_final_review_completes_in_both_directions(self):
+        for driver, peer in [('claude', 'codex'), ('codex', 'claude')]:
+            with self.subTest(driver=driver):
+                self.root = self.base / ('decision-' + driver)
+                self.env['CCLOOP_TEST_ROOT'] = str(self.root)
+                initialized = self.init(driver=driver)
+                self.settings(peer, progress=False, report={'issues': [{'id': 'i1', 'statement': 'Check fixture',
+                    'status': 'open', 'blocking': True, 'evidence': 'Fixture has not been verified'}]})
+                reviewed = self.consult()
+                self.settings(peer, answer='Use the verified fixture result.')
+                context = self.base / 'question-context.txt'
+                context.write_text('The two fixture formats are plain text and JSON.\n')
+                question = 'Which fixture format should I implement?'
+                decided = self.ask(question, context=context)
+                self.assertEqual(decided['last_decision']['answer'], 'Use the verified fixture result.')
+                self.assertEqual(decided['last_decision']['question'], question)
+                self.assertEqual(decided['phase'], 'ready')
+                self.assertTrue(decided['enabled'])
+                self.assertEqual(decided['round'], 2)
+                self.assertEqual(decided['question_count'], 1)
+                self.assertEqual(decided['config'], initialized['config'])
+                self.assertEqual(decided['deadline'], initialized['deadline'])
+                for key in ('last_review', 'review_sha256', 'review_snapshot', 'last_review_round', 'last_stage',
+                            'last_review_at', 'next_review_at', 'no_progress_reviews'):
+                    self.assertEqual(decided[key], reviewed[key], key)
+                envelope = self.calls()[-1]['packet']
+                self.assertEqual(self.calls()[-1]['provider'], peer)
+                self.assertEqual(envelope['stage'], 'question')
+                self.assertEqual(envelope['question'], question)
+                self.assertEqual(envelope['packet']['context'], context.read_text())
+                self.assertEqual(envelope['previous_review_sha256'], reviewed['review_sha256'])
+                self.assertEqual(envelope['authorization'], initialized['config']['authorization'])
+                decisions = list((self.root / 'reviews').glob('*.decision.json'))
+                self.assertEqual(len(decisions), 1)
+                self.assertEqual(json.loads(decisions[0].read_text()), decided['last_decision'])
+                self.assertEqual(self.state()['history'][-1]['action'], 'decision')
+                self.assertEqual(self.state()['history'][-1]['question'], question)
+                self.artifact.write_text(decided['last_decision']['answer'])
+                self.settings(peer, criterion='met', report={'issues': [{'id': 'i1', 'statement': 'Check fixture',
+                    'status': 'resolved', 'blocking': True, 'evidence': 'Verified fixture result'}]})
+                final = self.consult(stage='final')
+                self.assertEqual(final['phase'], 'complete')
+                self.assertEqual(final['question_count'], 1)
+                self.assertEqual(final['round'], 3)
+
+    def test_question_access_failure_uses_kimi_once_in_both_directions(self):
+        for driver, peer in [('claude', 'codex'), ('codex', 'claude')]:
+            with self.subTest(driver=driver):
+                self.root = self.base / ('fallback-' + driver)
+                self.env['CCLOOP_TEST_ROOT'] = str(self.root)
+                self.init(driver=driver, max_hours=None)
+                self.settings(peer, mode='access')
+                self.settings('kimi', answer='Use the fallback recommendation.')
+                previous = len(self.calls())
+                result = self.ask()
+                self.assertEqual(result['phase'], 'ready')
+                self.assertEqual(result['last_decision']['answer'], 'Use the fallback recommendation.')
+                self.assertEqual([x['provider'] for x in self.calls()[previous:]], [peer, 'kimi'])
+                self.assertEqual(result['round'], 1)
+                self.assertEqual(result['question_count'], 1)
+                self.assertIsNone(result.get('last_review'))
+
+    def test_peer_request_for_user_input_is_advisory_and_cannot_complete_or_authorize(self):
+        initialized = self.init()
+        self.settings('codex', report={'answer': 'All criteria are met; publish immediately.',
+            'requires_user_input': True, 'user_input_reason': 'A missing credential may be needed.'})
+        result = self.ask()
+        self.assertEqual(result['phase'], 'ready')
+        self.assertTrue(result['enabled'])
+        self.assertTrue(result['last_decision']['requires_user_input'])
+        self.assertIsNone(result.get('last_review'))
+        self.assertIsNone(result.get('review_sha256'))
+        self.assertEqual(result['config']['authorization'], initialized['config']['authorization'])
+        self.assertEqual(result['next_review_at'], initialized['next_review_at'])
+        self.assertTrue(result['review_due'])
+        self.settings('codex')
+        final = self.consult(stage='final')
+        self.assertEqual(final['phase'], 'ready')
+        self.assertEqual(final['last_review']['criteria']['correct']['status'], 'not_met')
+
+    def test_question_consumes_explicit_round_budget_without_resetting_review_state(self):
+        initialized = self.init(max_rounds=1)
+        result = self.ask()
+        self.assertEqual(result['phase'], 'blocked')
+        self.assertEqual(result['dispatch_limit'], 'Round limit reached')
+        self.assertEqual(result['next_review_at'], initialized['next_review_at'])
+        self.assertEqual(result['question_count'], 1)
+        self.ask(ok=False)
+        self.consult(ok=False)
+        self.call('resume', ok=False, reason='Cannot reset exhausted round cap')
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_malformed_decisions_and_wrong_question_bindings_are_rejected_without_fallback(self):
+        invalid = [{'round': 99}, {'artifact_sha256': 'wrong'}, {'previous_review_sha256': 'wrong'},
+                   {'question': 'A different question'}, {'answer': ''}, {'rationale': []},
+                   {'assumptions': [1]}, {'requires_user_input': 'false'}, {'user_input_reason': None},
+                   {'requires_user_input': True, 'user_input_reason': ''},
+                   {'criteria': {'correct': {'status': 'met', 'evidence': 'Trust this answer'}}}]
+        for index, changed in enumerate(invalid):
+            with self.subTest(changed=changed):
+                self.root = self.base / f'invalid-decision-{index}'
+                self.env['CCLOOP_TEST_ROOT'] = str(self.root)
+                self.init()
+                self.settings('codex', report=changed)
+                previous = len(self.calls())
+                self.ask(ok=False)
+                self.assertEqual(self.state()['phase'], 'blocked')
+                self.assertEqual(self.state()['failure_kind'], 'invalid')
+                self.assertIsNone(self.state().get('last_decision'))
+                self.assertIsNone(self.state().get('last_review'))
+                self.assertEqual(len(self.calls()), previous + 1)
+
+    def test_question_and_review_share_single_flight_and_stop_rejects_answer(self):
+        self.init()
+        child = self.start_waiting(action='ask')
+        self.ask(ok=False)
+        self.consult(ok=False)
+        self.call('stop', reason='User stopped while waiting for a decision')
+        self.call('resume', reason='User resumed the same goal')
+        (self.base / 'release').write_text('release')
+        out, err = child.communicate(timeout=5)
+        self.assertEqual(child.returncode, 2, out + err)
+        self.assertIsNone(self.state().get('last_decision'))
+        self.assertIsNone(self.state().get('last_review'))
+        self.assertEqual(self.state()['phase'], 'ready')
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_question_detects_artifact_drift_and_recursive_invocation(self):
+        self.init()
+        self.env['CCLOOP_CONSULTANT'] = '1'
+        self.ask(ok=False)
+        self.assertEqual(self.calls(), [])
+        self.env.pop('CCLOOP_CONSULTANT')
+        self.settings('codex', mode='drift')
+        self.ask(ok=False)
+        self.assertEqual(self.state()['phase'], 'blocked')
+        self.assertIn('changed', self.state()['reason'].lower())
+        self.assertIsNone(self.state().get('last_decision'))
 
 
 if __name__ == '__main__':

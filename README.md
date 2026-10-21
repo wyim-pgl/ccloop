@@ -1,9 +1,10 @@
 # ccloop
 
-Give Claude Code or Codex a goal. The active client works toward it, asks the
-other CLI for review, verifies the next milestone, and repeats until the original
-criteria are met or a stopping condition is reached. If a selected participant
-cannot be accessed, use Kimi with the saved goal and evidence.
+Type `ccloop` followed by a goal. Claude Code or Codex works toward it, asks the
+other model ordinary questions, applies justified decisions, and continues until
+the original goal is verified. It does not stop at a plan or ask routine
+"should I continue?" questions. If a selected participant cannot be accessed,
+use Kimi with the saved goal and evidence.
 
 | Driver | Reviewer | Reviewer access fallback |
 | --- | --- | --- |
@@ -18,12 +19,14 @@ The current CLI workflow needs no desktop UI or hourly scheduler.
 
 The original package format is retained: `SKILL.md`, `agents/`, `assets/`,
 `references/`, `scripts/` and `tests/`. Private supervisor runs keep `CONTROL.md`,
-`state.json`, numbered review/prompt/observation artifacts, and bounded stopping
+`state.json`, numbered review/prompt/observation artifacts, and explicit stopping
 conditions. The CLI transport and model routing extend that existing workflow.
 
 ```mermaid
 flowchart LR
     D[Claude Code or Codex works toward the goal] --> H[30-minute review checkpoint]
+    D -->|ordinary question| Q[Ask the other model now]
+    Q --> D
     H --> R[Reconcile artifacts, claims and open issues]
     R --> V[Other CLI reviews with its frontier model]
     V --> S{Goal verified or stop?}
@@ -63,7 +66,13 @@ Installing the skill starts no goal or background process.
 
 ## Set a goal
 
-In Codex:
+In Codex, give the goal directly:
+
+```text
+ccloop Fix the parser while preserving every input format, and keep going until its tests pass.
+```
+
+The explicit skill form also works:
 
 ```text
 $ccloop Fix the parser while preserving every existing input format.
@@ -80,11 +89,16 @@ Success requires the integration and regression checks to pass.
 To pin the **driver** to its frontier model from the terminal:
 
 ```bash
+python3 scripts/launch.py 'Fix the parser while preserving every existing input format'
 python3 scripts/launch.py --driver codex --project /work/project \
   --goal 'Fix the parser while preserving every existing input format'
 python3 scripts/launch.py --driver claude --project /work/project \
   --goal 'Fix the parser while preserving every existing input format'
 ```
+
+The positional-goal shorthand defaults to Codex in the current directory. If the
+local `ccloop` shortcut is installed, `ccloop 'The goal'` is equivalent. Existing
+`--driver`, `--project` and `--goal` flags remain available.
 
 The launcher checks selected-model access with a small tool-free readiness call,
 then preserves normal interactive CLI permissions for project work. The readiness
@@ -106,12 +120,14 @@ overrides pin a chosen profile; omit them for automatic updates. See
 
 ## What happens during the loop
 
-1. Save the original goal, criteria, scope and bounded limits in a private ledger.
+1. Save the original goal, criteria, scope and any user-supplied limits in a private ledger.
 2. Ask the other CLI to review the plan using supplied source excerpts and evidence.
-3. Work on bounded milestones and review current results every **30 minutes** by
+3. Resolve ordinary implementation questions with an immediate peer question;
+   record the answer and assumptions, choose an authorized next step and execute it.
+4. Work on bounded milestones and review current results every **30 minutes** by
    default, with an immediate final review when the original goal is established.
-4. Reconcile new findings with prior claims and open objections, then continue.
-5. Perform final verification and final cross-review. Completion requires every
+5. Reconcile new findings with prior claims and open objections, then continue.
+6. Perform final verification and final cross-review. Completion requires every
    original criterion met and no open blocking issue.
 
 Authentication, usage/rate limits, unavailable selected models, missing binaries,
@@ -128,16 +144,20 @@ the client next launches or hands off. CLI binaries are not upgraded automatical
 
 Use [the config template](assets/ccloop.config.example.json) and
 [CLI protocol](references/cli-protocol.md) for setup, packets, reports, stop/resume
-and handoff commands. Defaults are 12 consultation rounds, two hours, three
-no-progress milestone reviews, a 300-second consultation timeout, and a 30-minute
-review interval. The active client honors due-review status; this does not create
-a background scheduler.
+and handoff commands. New runs have no automatic round, overall-time or
+no-progress cap; these limits default to `null`. Explicit user limits still apply
+and old ledgers keep their existing caps. The consultation timeout remains 300
+seconds and periodic review remains every 30 minutes. The active client honors
+due-review status; this does not create a background scheduler.
 
 ```bash
 python3 scripts/ccloop.py doctor
 python3 scripts/ccloop.py --root /work/private-supervisor init --config /work/run.json
 python3 scripts/ccloop.py --root /work/private-supervisor consult \
   --packet /work/private-supervisor/plan.json --stage plan
+python3 scripts/ccloop.py --root /work/private-supervisor ask \
+  --question 'Which next step best advances the original goal?' \
+  --context /work/private-supervisor/current-options.md
 python3 scripts/ccloop.py --root /work/private-supervisor status
 ```
 
@@ -153,6 +173,10 @@ running. Two model opinions are not a correctness proof. The driver still checks
 the evidence, normal project permissions apply, and watch globs define artifact
 drift coverage. Reviewers receive frozen packets outside the project with no
 editing role; Kimi hooks/plugins that could add tools are rejected.
+Only verified completion, user stop, an explicit user limit or a genuine
+unresolvable blocker ends an active run. Missing private credentials or new
+authorization cannot be supplied by another model; prepare all independent work
+before asking the user for that necessary item.
 
 The old UI workflow is archived as [the legacy desktop skill](references/legacy-desktop/SKILL.md).
 Its [controller](scripts/control.py), [protocol](references/protocol.md), and

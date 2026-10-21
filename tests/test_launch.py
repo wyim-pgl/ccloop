@@ -100,6 +100,12 @@ class LauncherTest(unittest.TestCase):
             cwd=self.base, env=self.env, capture_output=True, text=True, timeout=10,
         )
 
+    def terminal(self, *args):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), '--offline-models', *args],
+            cwd=self.project, env=self.env, capture_output=True, text=True, timeout=10,
+        )
+
     def all_calls(self):
         if not self.log.exists():
             return []
@@ -111,7 +117,7 @@ class LauncherTest(unittest.TestCase):
     def probes(self):
         return [entry for entry in self.all_calls() if entry['probe']]
 
-    def ledger(self, name, driver, goal, models=None, **changes):
+    def ledger(self, name, driver, goal, models=None, unlimited=False, **changes):
         root = self.base / name
         config = self.base / (name + '.json')
         config.write_text(json.dumps({
@@ -119,17 +125,75 @@ class LauncherTest(unittest.TestCase):
             'authorization': 'Synthetic launcher fixture',
             'success_criteria': [{'id': 'task', 'description': 'Complete the fixture task'}],
             'watch': ['**/*.txt'], 'models': models or {}, 'auto_update_models': False,
+            'max_rounds': 12, 'max_hours': 2, 'max_no_progress_reviews': 3,
         }))
         result = subprocess.run([sys.executable, str(HELPER), '--root', str(root),
                                  'init', '--config', str(config)],
                                 env=self.env, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         state_path = root / 'state.json'
-        if changes:
+        if changes or unlimited:
             state = json.loads(state_path.read_text())
+            if unlimited:
+                state['config'].update(max_rounds=None, max_hours=None,
+                                       max_no_progress_reviews=None)
+                state['deadline'] = None
             state.update(changes)
             state_path.write_text(json.dumps(state))
         return state_path
+
+    def test_positional_goal_defaults_to_codex_in_current_directory(self):
+        result = self.terminal('Complete the supplied task')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(call['driver'], call['probe']) for call in self.all_calls()],
+                         [('codex', True), ('codex', False)])
+        call = self.invocations()[0]
+        self.assertEqual(call['cwd'], str(self.project))
+        self.assertEqual(call['argv'][:-1],
+                         ['--model', 'gpt-6-astra', '-c', 'model_reasoning_effort="max"'])
+        self.assertTrue(call['argv'][-1].endswith('Goal (verbatim):\nComplete the supplied task'))
+        self.assertIn('"auto_update_models": true', call['argv'][-1])
+
+    def test_positional_goal_words_join_with_spaces(self):
+        result = self.terminal('Complete', 'the', 'supplied', 'task')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.invocations()[0]['argv'][-1].endswith(
+            'Goal (verbatim):\nComplete the supplied task'))
+
+    def test_positional_goal_retains_driver_project_and_model_overrides(self):
+        result = self.terminal('Complete the supplied task', '--driver', 'kimi',
+                               '--project', str(self.base), '--kimi-model', 'pinned-kimi')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.invocations()[0]
+        self.assertEqual(call['driver'], 'kimi')
+        self.assertEqual(call['cwd'], str(self.base))
+        self.assertEqual(call['argv'][:2], ['--model', 'pinned-kimi'])
+        self.assertIn('"auto_update_models": false', call['argv'][-1])
+
+    def test_positional_goal_preserves_unicode_whitespace_and_shell_metacharacters(self):
+        sentinel = self.base / 'unexpected-shell-output'
+        goal = f'  목표: fix "quotes"; $(touch {sentinel}) `touch {sentinel}` $HOME\n🚀 second line  '
+        result = self.terminal(goal)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.invocations()[0]['argv'][-1].endswith('Goal (verbatim):\n' + goal))
+        self.assertFalse(sentinel.exists())
+
+    def test_positional_and_flag_goals_are_rejected_before_any_calls(self):
+        for positional, flagged in (('First goal', 'Second goal'), ('', 'Second goal'),
+                                     ('First goal', '')):
+            with self.subTest(positional=positional, flagged=flagged):
+                result = self.terminal(positional, '--goal', flagged)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('either a positional goal or --goal', result.stderr)
+                self.assertEqual(self.all_calls(), [])
+
+    def test_empty_goals_are_rejected_before_any_calls(self):
+        for args in ((), ('',), (' \n\t ',), ('--goal', ''), ('--goal', ' \n\t ')):
+            with self.subTest(args=args):
+                result = self.terminal(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('goal must not be empty', result.stderr)
+                self.assertEqual(self.all_calls(), [])
 
     def test_default_frontier_flags_reach_each_interactive_driver(self):
         expected = {
@@ -197,6 +261,17 @@ class LauncherTest(unittest.TestCase):
         self.assertIn('criteria', prompt)
         self.assertIn('budgets', prompt)
         self.assertIn('resume', prompt.lower())
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_unlimited_saved_ledger_runs_readiness_and_interactive_driver_without_mutation(self):
+        state_path = self.ledger('continuous', 'codex', 'Original objective', unlimited=True,
+                                 round=20, no_progress_reviews=5)
+        before = state_path.read_bytes()
+        result = self.terminal('Original objective', '--root', str(state_path.parent))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(call['driver'], call['probe']) for call in self.all_calls()],
+                         [('codex', True), ('codex', False)])
+        self.assertIn(str(state_path.parent), self.invocations()[0]['argv'][-1])
         self.assertEqual(state_path.read_bytes(), before)
 
     def test_missing_primary_launches_kimi_once_with_same_goal_and_root(self):
@@ -395,6 +470,31 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual([entry['driver'] for entry in self.invocations()], ['kimi'])
         self.assertIn('timed out', result.stderr)
 
+    def test_unlimited_run_keeps_explicit_readiness_timeout_and_kimi_fallback(self):
+        state_path = self.ledger('continuous', 'claude', 'Keep task', unlimited=True)
+        before = json.loads(state_path.read_text())
+        self.env['LAUNCH_TEST_PROBE_CLAUDE'] = 'wait'
+        result = self.launch('claude', 'Keep task', '--root', str(state_path.parent),
+                             '--access-timeout', '0.2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([entry['driver'] for entry in self.invocations()], ['kimi'])
+        self.assertIn('timed out after 0.2 seconds', result.stderr)
+        after = json.loads(state_path.read_text())
+        self.assertIsNone(after['deadline'])
+        self.assertEqual(after['config'], before['config'])
+
+    def test_explicit_deadline_expires_during_readiness_without_interactive_launch(self):
+        self.ledger('bounded', 'claude', 'Keep task', deadline=time.time() + 0.7)
+        self.env['LAUNCH_TEST_PROBE_CLAUDE'] = 'wait'
+        started = time.monotonic()
+        result = self.launch('claude', 'Keep task', '--root', 'bounded',
+                             '--access-timeout', '5')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual([entry['driver'] for entry in self.probes()], ['claude'])
+        self.assertEqual(self.invocations(), [])
+        self.assertNotIn('starting kimi fallback', result.stderr)
+
     def test_access_timeout_rejects_nonpositive_or_nonfinite_values_without_calls(self):
         for value in ('0', '-1', 'nan', 'inf'):
             with self.subTest(value=value):
@@ -487,7 +587,13 @@ class LauncherTest(unittest.TestCase):
         self.assertFalse(json.loads(state_path.read_text())['enabled'])
 
     def test_user_stop_promptly_terminates_waiting_readiness_probe(self):
-        state_path = self.ledger('waiting', 'claude', 'Frozen goal')
+        self.assert_user_stop_promptly_terminates_waiting_readiness_probe()
+
+    def test_user_stop_promptly_terminates_unlimited_readiness_probe(self):
+        self.assert_user_stop_promptly_terminates_waiting_readiness_probe(unlimited=True)
+
+    def assert_user_stop_promptly_terminates_waiting_readiness_probe(self, unlimited=False):
+        state_path = self.ledger('waiting', 'claude', 'Frozen goal', unlimited=unlimited)
         pid_path = self.base / 'probe.pid'
         self.env['LAUNCH_TEST_PROBE_PID'] = str(pid_path)
         self.env['LAUNCH_TEST_PROBE_CLAUDE'] = 'wait_for_stop'

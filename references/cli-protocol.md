@@ -15,15 +15,18 @@ python3 scripts/ccloop.py --root /work/private-supervisor consult \
 Create `run.json` from [the template](../assets/ccloop.config.example.json).
 The original configuration, goal and criteria are frozen in the ledger. The
 supervisor retains the original layout: `CONTROL.md`, `state.json`, `reviews/`,
-`prompts/` and `observations/`. Defaults
-are 12 consultation rounds, two hours, three consecutive milestone reviews without
-verified progress, a 300-second per-call timeout, and a **30-minute review interval**.
-The review interval is separate from the whole-run time limit and call timeout.
+`prompts/` and `observations/`. New runs are continuous by default: `max_rounds`,
+`max_hours` and `max_no_progress_reviews` are `null`, meaning no automatic cap.
+Positive values explicitly supplied by the user still impose their respective
+limits; existing ledgers retain their recorded numeric caps. The per-call timeout
+remains 300 seconds, and the periodic review interval remains **30 minutes**.
+The review interval is separate from an explicitly bounded whole-run time limit
+and the per-call timeout.
 Status exposes `last_review_at`, `next_review_at` and `review_due`; the active host
 checks these while working. Plan and final reviews happen immediately. The
 `heartbeat` command prints a durable wakeup prompt but creates no schedule.
-Choose task-appropriate
-limits from the user's instruction. Changing a config file does not reset a run.
+Use explicit limits from the user's instruction rather than silently adding a
+two-hour or fixed-round stop. Changing a config file does not reset a run.
 The `watch` list defines drift detection coverage; include material file formats.
 Automatic model metadata updates are enabled by default. `models --refresh`
 refreshes the audited active profile; the original goal and criteria remain fixed.
@@ -85,6 +88,39 @@ actual user stop requires the user's continuation before `resume`; an exhausted
 budget cannot be reset by either command. Model substitution detected in trusted
 CLI metadata is a selected-model access failure and may use Kimi.
 
+## Immediate questions and decisions
+
+Use `ask` whenever an ordinary question would interrupt progress. It does not
+wait for the review interval. The same opposite-model routing, frontier model
+profile, frozen goal, artifact checks, process cancellation and Kimi fallback apply:
+
+```bash
+python3 scripts/ccloop.py --root /work/private-supervisor ask \
+  --question 'Should the parser keep standard-library JSON or add a YAML dependency?' \
+  --context /work/private-supervisor/parser-options.md
+```
+
+`--context` is optional UTF-8 text, including JSON or relevant source excerpts.
+The helper supplies the original goal and current review context. The decision
+schema binds `question`, `round`, `artifact_sha256` and `previous_review_sha256`
+to this request. Its remaining fields are `answer`, `rationale`, `assumptions`
+(list of strings), `requires_user_input` (boolean) and `user_input_reason` (string,
+empty when human input is unnecessary).
+
+The recorded `last_decision` is advice for the driver to evaluate and apply. A
+question answer does not update the criterion/claim/issue register, declare
+completion, reset `next_review_at`, or change the no-progress counter. Questions
+increment `question_count` and the dispatch round: an explicit `max_rounds` bounds
+all peer requests, including questions. With the default `null` cap, routine
+questions do not stop the loop.
+
+Inspect the repository, ask the peer, choose a reversible action, record the
+assumptions and execute the next step. If the peer asks for more technical
+context, supply it or ask a focused follow-up. Do not turn ordinary uncertainty
+into a human confirmation request. `requires_user_input` is advisory; only a
+genuinely essential missing private fact, credential or new authorization calls
+for the user's input. Peer advice is not that authorization.
+
 ## Routing and access
 
 | Active driver | Primary reviewer | Access fallback |
@@ -120,7 +156,7 @@ python3 scripts/ccloop.py --root /work/private-supervisor stop --reason 'User st
 python3 scripts/ccloop.py --root /work/private-supervisor resume --reason 'User continuation'
 ```
 
-Read status after every command. A stopped or exhausted run does not authorize
+Read status after every command. A user-stopped or explicitly exhausted run does not authorize
 more work. An interrupted consultation retains its intent; inspect it before
 resuming. The helper rejects stale results and user-stop races. It does not turn
 two model opinions into proof, sandbox the driver's work, or run after its host

@@ -8,9 +8,9 @@
     {"id": "verification", "description": "Relevant checks were executed and their observed results support the deliverable."}
   ],
   "watch": ["**/*.py", "**/*.md", "**/*.json", "**/*.toml", "**/*.txt", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.css", "**/*.html"],
-  "max_rounds": 12,
-  "max_hours": 2,
-  "max_no_progress_reviews": 3,
+  "max_rounds": null,
+  "max_hours": null,
+  "max_no_progress_reviews": null,
   "timeout_seconds": 300,
   "review_interval_minutes": 30,
   "auto_update_models": true,
