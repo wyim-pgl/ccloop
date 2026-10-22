@@ -200,10 +200,17 @@ class CLIBase(unittest.TestCase):
         child = subprocess.Popen(self.command(action, **flags),
             env=self.env, cwd=self.base, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: child.kill() if child.poll() is None else None)
-        end = time.monotonic() + 5
-        while not (self.base / 'ready').exists() and time.monotonic() < end and child.poll() is None:
+        # The fake reviewer writes its ready marker as soon as it starts, which can
+        # precede the helper's fsynced 'started' ledger commit on slow storage.
+        # Wait for both so callers observe a stable in-flight consultation.
+        def recorded():
+            attempts = self.state().get('attempts', []) if (self.root / 'state.json').exists() else []
+            return bool(attempts) and attempts[-1].get('status') == 'running' and 'pid' in attempts[-1]
+        end = time.monotonic() + 20
+        while not ((self.base / 'ready').exists() and recorded()) and time.monotonic() < end and child.poll() is None:
             time.sleep(.01)
         self.assertTrue((self.base / 'ready').exists(), 'fake reviewer never started')
+        self.assertTrue(recorded(), 'running reviewer attempt was not recorded in the ledger')
         return child
 
 
