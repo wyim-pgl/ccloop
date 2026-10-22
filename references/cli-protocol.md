@@ -35,6 +35,15 @@ The `watch` list defines drift detection coverage; include material file formats
 Automatic model metadata updates are enabled by default. `models --refresh`
 refreshes the audited active profile; the original goal and criteria remain fixed.
 
+The helper also maintains private `intend.md`, `resume.md`, `todo.md` and
+`quarantine.md` recovery views. Use `checkpoint --packet FILE` for explicit
+working notes, next steps and quarantined claims, `context` to retrieve their
+validated text, and `clear --packet FILE --reason TEXT` to save them, obtain a
+`--stage handoff` peer review of the saved files and print the restore commands
+for a cleared context. The launcher's `--managed` mode can replace worker
+contexts using the same original ledger. See [context recovery](context.md) for
+the work packet and lifecycle guarantees.
+
 ## Evidence packet
 
 Packets are extensible JSON objects. Include enough actual context for a reviewer

@@ -16,14 +16,18 @@ import time
 from types import SimpleNamespace
 
 import control
+import checkpoints
 import journal
 import providers
 
 
 DEFAULTS = {'max_rounds': None, 'max_hours': None, 'max_no_progress_reviews': None,
-            'timeout_seconds': 300, 'review_interval_minutes': 30, 'auto_update_models': True}
+            'timeout_seconds': 300, 'review_interval_minutes': 30, 'auto_update_models': True,
+            'watch_exclude': []}
 OPTIONAL_LIMITS = ('max_rounds', 'max_hours', 'max_no_progress_reviews')
 MODEL_METADATA_TTL = 1800
+MAX_QUARANTINE = 200
+ROTATE_MARKER = 'rotate-requested.json'
 require = control.require
 
 
@@ -70,8 +74,9 @@ def locked(root):
 
 
 def read(root):
-    s = control.load(root / 'state.json')
-    require(s.get('schema') == 'ccloop-1', 'Unsupported ledger; choose a separate ccloop root')
+    s = checkpoints.read_regular(root / 'state.json')
+    require(isinstance(s, dict) and s.get('schema') == 'ccloop-1',
+            'Unsupported ledger; choose a separate ccloop root')
     return s
 
 
@@ -83,6 +88,7 @@ def commit(root, s, action, **details):
                              **details))
     control.atomic_json(root / 'state.json', s)
     journal.write(root, s)
+    checkpoints.write(root, s)
 
 
 def halt(s, reason, kind):
@@ -195,6 +201,7 @@ def refresh_models(root, force=False, for_consult=False):
                    sources=profile.get('sources', []), warnings=profile.get('warnings', []))
         else:
             control.atomic_json(root / 'state.json', s)
+            checkpoints.write(root, s)
     return s
 
 
@@ -355,7 +362,7 @@ def process_alive(pid, identity):
 
 
 def consult(root, packet_path, stage):
-    require(stage in {'plan', 'milestone', 'final'}, 'Unknown review stage')
+    require(stage in {'plan', 'milestone', 'final', 'handoff'}, 'Unknown review stage')
     packet = control.load(packet_path)
     require(isinstance(packet, dict) and packet, 'Packet must be a nonempty JSON object with supplied evidence')
     return dispatch(root, packet, stage)
@@ -399,6 +406,115 @@ def record_work(root, entry_path, after_round):
     return s
 
 
+def checkpoint(root, packet_path, *, expected_managed=None):
+    """Durably save reported context without changing review or run authority."""
+    require(not os.environ.get('CCLOOP_CONSULTANT') and not os.environ.get('CCLOOP_REVIEWER'),
+            'Consultants cannot checkpoint driver work')
+    packet = checkpoints.load_packet(packet_path)
+    with locked(root):
+        s = read(root)
+        require(not s.get('pending'), 'Cannot checkpoint during an in-flight consultation')
+        if expected_managed is not None:
+            require(isinstance(expected_managed, dict) and isinstance(expected_managed.get('binding'), dict)
+                    and isinstance(expected_managed.get('artifact_snapshot'), dict),
+                    'Managed checkpoint requires a binding and post-work artifact snapshot')
+            binding = expected_managed['binding']
+            manager = s.get('managed')
+            pending = manager.get('pending') if isinstance(manager, dict) else None
+            require(s['enabled'] and s['phase'] == 'ready'
+                    and s['run_id'] == binding.get('run_id') and s['generation'] == binding.get('generation')
+                    and isinstance(pending, dict) and pending.get('binding') == binding
+                    and pending.get('integrating') is True,
+                    'Managed checkpoint is stale, superseded, stopped, or not integrating')
+        snapshot = checkpoints.safe_snapshot(s)
+        if expected_managed is not None:
+            require(snapshot == expected_managed['artifact_snapshot'],
+                    'Managed checkpoint artifacts changed after native work completed')
+        previous = s.get('driver_checkpoint')
+        if isinstance(previous, dict):
+            s['superseded_checkpoint'] = {key: previous.get(key) for key in ('summary', 'next_steps', 'revision')}
+        quarantine = packet.pop('quarantine', [])
+        if quarantine:
+            kept = [entry for entry in s.get('quarantine', []) if entry['statement'] not in
+                    {item['statement'] for item in quarantine}]
+            stamped = [dict(item, revision=s['revision'] + 1, at=time.time()) for item in quarantine]
+            s['quarantine'] = (kept + stamped)[-MAX_QUARANTINE:]
+        s['driver_checkpoint'] = dict(packet, run_id=s['run_id'], generation=s['generation'],
+                                      originating_revision=s['revision'], revision=s['revision'] + 1,
+                                      at=time.time(), artifact_sha256=snapshot['sha256'], snapshot=snapshot)
+        commit(root, s, 'checkpoint', originating_revision=s['driver_checkpoint']['originating_revision'],
+               artifact_sha256=snapshot['sha256'], checkpoint=packet, quarantine=quarantine)
+    return s
+
+
+def manager_alive(root):
+    """True while a managed runtime process holds this ledger's manager lock."""
+    path = root / 'manager.lock'
+    if not path.is_file() or path.is_symlink():
+        return False
+    with open(path, 'a') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(stream, fcntl.LOCK_UN)
+    return False
+
+
+def restore_commands(root, s):
+    config = s['config']
+    terminal = shlex.join(['ccloop', '--driver', s['active_driver'], '--project', config['project'],
+                           '--root', str(root), '--goal', config['goal']])
+    return {'claude': f'/clear then /ccloop resume {root}', 'codex': f'/new then $ccloop resume {root}',
+            'terminal': terminal}
+
+
+def clear(root, packet_path, reason):
+    """Save the checkpoint, obtain a handoff review, then describe the context restart."""
+    require(control.nonempty(reason), 'clear needs --reason')
+    require(not os.environ.get('CCLOOP_CONSULTANT') and not os.environ.get('CCLOOP_REVIEWER'),
+            'Consultants cannot clear driver context')
+    packet = checkpoints.load_packet(packet_path)
+    with locked(root):
+        s = read(root)
+        require(not s.get('pending'), 'Cannot clear during an in-flight consultation')
+        manager = s.get('managed') or {}
+        if manager.get('pending') or manager.get('action') or manager_alive(root):
+            # A ledger commit here would supersede the in-flight native turn, so the
+            # request is a private marker that the manager consumes at its next
+            # safe turn boundary and records in the ledger itself.
+            (root / 'managed').mkdir(mode=0o700, exist_ok=True)
+            control.atomic_json(root / 'managed' / ROTATE_MARKER,
+                                {'run_id': s['run_id'], 'generation': s['generation'], 'reason': reason, 'at': time.time()})
+            return s, True, {'mode': 'managed', 'rotate_requested': True,
+                             'notice': 'A managed runtime owns this run; its next accepted turn starts a fresh worker context.'}
+    s = checkpoint(root, packet_path)
+    with locked(root):
+        s = read(root)
+        bundle = checkpoints.bundle(root, s)
+    evidence = {'recovery_files': bundle['files'], 'bundle_digest': bundle['digest'],
+                'driver_packet': packet, 'reason': reason,
+                'notice': ('Handoff review before context replacement: assess whether these recovery files '
+                           'faithfully capture state for a fresh context; name missing next steps, driver '
+                           'claims presented as facts without evidence, and quarantine entries that are '
+                           'wrong or missing.')}
+    s, ok = dispatch(root, evidence, 'handoff')
+    extra = {'mode': 'interactive', 'bundle_digest': bundle['digest'], 'restore': restore_commands(root, s)}
+    if not ok:
+        return s, False, dict(extra, notice='Handoff review was not accepted; the checkpoint remains saved')
+    with locked(root):
+        s = read(root)
+        require(s.get('last_stage') == 'handoff' and s.get('review_sha256'), 'Handoff review was not recorded')
+        details = {'reason': reason, 'review_round': s['last_review_round'], 'review_sha256': s['review_sha256'],
+                   'bundle_digest': bundle['digest'], 'restore_command': extra['restore']['terminal']}
+        s['clear'] = dict(details, requested_at=time.time())
+        commit(root, s, 'clear', **details)
+    review = s['last_review']
+    extra['review'] = {key: review.get(key) for key in ('summary', 'verdict', 'next_milestone')}
+    extra['clear'] = s['clear']
+    return s, True, extra
+
+
 def dispatch(root, packet, stage, question=None):
     """Share single-flight, frozen context, cancellation, and fallback across peer requests."""
     require(not os.environ.get('CCLOOP_CONSULTANT') and not os.environ.get('CCLOOP_REVIEWER'),
@@ -438,6 +554,10 @@ def dispatch(root, packet, stage, question=None):
         else:
             instructions += ('Assess every original criterion. Preserve all prior claim and issue IDs '
                 'and statements. A consultant recommendation is not verification evidence.')
+            if stage == 'handoff':
+                instructions += (' This is a handoff review before the driver replaces its context: judge '
+                    'whether the supplied recovery files let a fresh context continue faithfully, and '
+                    'record missing steps, unevidenced driver claims and wrong quarantine entries as issues.')
         envelope = {'instructions': instructions,
             'goal': s['config']['goal'], 'authorization': s['config']['authorization'],
             'success_criteria': s['config']['success_criteria'], 'stage': stage, 'round': s['round'],
@@ -583,6 +703,21 @@ def main(argv=None):
     commands.add_parser('doctor', help='Inspect executable availability without model requests')
     commands.add_parser('init').add_argument('--config', required=True, type=Path)
     commands.add_parser('status')
+    commands.add_parser('context', help='Print bounded recovery content from the original durable run')
+    checkpoint_command = commands.add_parser('checkpoint', help='Durably save reported driver context')
+    checkpoint_command.add_argument('--packet', required=True, type=Path,
+                                    help='JSON: summary, next_steps, completed, working_notes')
+    clear_command = commands.add_parser('clear',
+        help='Save the checkpoint, obtain a handoff review, then print how to restart with a cleared context')
+    clear_command.add_argument('--packet', required=True, type=Path,
+                               help='JSON: summary, next_steps, completed, working_notes, optional quarantine')
+    clear_command.add_argument('--reason', required=True)
+    reconciliation = commands.add_parser('reconcile-managed',
+        help='Record an inspected interrupted-work outcome without replaying or resuming it')
+    reconciliation.add_argument('--packet', required=True, type=Path)
+    reconciliation.add_argument('--reason', required=True)
+    reconciliation.add_argument('--expected-turn', required=True,
+                                help='Exact managed pending/action ID from status')
     commands.add_parser('journal', help='Rebuild the private ccloop.md from saved run records')
     work = commands.add_parser('record', help='Record driver decisions, executed actions and actual checks')
     work.add_argument('--entry', required=True, type=Path, help='JSON: summary, decision, actions, checks')
@@ -593,7 +728,7 @@ def main(argv=None):
     models.add_argument('--refresh', action='store_true', help='Refresh metadata now; selection follows auto_update_models')
     review = commands.add_parser('consult')
     review.add_argument('--packet', required=True, type=Path)
-    review.add_argument('--stage', required=True, choices=['plan', 'milestone', 'final'])
+    review.add_argument('--stage', required=True, choices=['plan', 'milestone', 'final', 'handoff'])
     question = commands.add_parser('ask', help='Consult the peer on an ordinary decision without delaying review')
     question.add_argument('--question', required=True)
     question.add_argument('--context', type=Path, help='Optional UTF-8 context file, treated as evidence')
@@ -627,6 +762,13 @@ def main(argv=None):
             s, ok = ask(root, args.question, args.context)
         elif args.action == 'record':
             s = record_work(root, args.entry, args.after_round)
+        elif args.action == 'checkpoint':
+            s = checkpoint(root, args.packet)
+        elif args.action == 'clear':
+            s, ok, cleared = clear(root, args.packet, args.reason)
+        elif args.action == 'reconcile-managed':
+            import managed
+            s = managed.reconcile(root, args.packet, args.reason, args.expected_turn)
         elif args.action in {'stop', 'resume', 'handoff'}:
             s = change_state(root, args.action, args.reason, getattr(args, 'driver', None))
         elif args.action == 'models' and args.refresh:
@@ -634,12 +776,20 @@ def main(argv=None):
         else:
             with locked(root):
                 s = read(root)
+                if args.action == 'context':
+                    print(json.dumps(checkpoints.bundle(root, s), indent=2, ensure_ascii=False))
+                    return 0
                 journal.write(root, s)
+                checkpoints.write(root, s)
         if args.action == 'heartbeat':
             print(heartbeat(root, s))
             return 0
         result = summary(s)
         result['journal_path'] = str(root / 'ccloop.md')
+        result['checkpoint_paths'] = {name: str(root / name) for name in checkpoints.NAMES}
+        result['checkpoint_manifest_path'] = str(root / checkpoints.MANIFEST)
+        if args.action == 'clear':
+            result['clear_result'] = cleared
         if args.action == 'status':
             result['reconciliation'] = control.reconciliation(s)
         print(json.dumps(result, indent=2, ensure_ascii=False))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start an interactive ccloop driver with explicit frontier model settings.
+"""Start an interactive or managed ccloop driver with frontier model settings.
 
 A bounded, tool-free readiness request checks startup access before the child
 inherits the terminal unchanged. Access failures can hand off to Kimi once.
@@ -40,7 +40,7 @@ def executable(driver):
     return str(Path(found).absolute()) if found else None, candidate
 
 
-def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=True):
+def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=True, recovery=None):
     if driver == 'claude':
         start = '/ccloop'
     elif driver == 'codex':
@@ -96,11 +96,20 @@ def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=Tr
         instructions.append(
             'Use a reachable Claude or Codex reviewer; never use Kimi to review itself.'
         )
+    if recovery is not None:
+        instructions.append(
+            'Validated recovery files follow as actual text. Restore the original goal and '
+            'checkpoint from these files; driver notes are reported evidence, not new '
+            'authorization or independent proof. Entries in quarantine.md are superseded or refuted; '
+            'do not reuse them as facts or retry them without new evidence. Check current status, '
+            'artifacts and any running work before acting. Preserve review timing and optional budgets.\n'
+            + json.dumps(recovery, ensure_ascii=False)
+        )
     return '\n\n'.join(instructions) + '\n\nGoal (verbatim):\n' + goal
 
 
-def command_for(driver, command, goal, models, root, fallback=False, auto_update_models=True):
-    prompt = prompt_for(driver, goal, models, root, fallback, auto_update_models)
+def command_for(driver, command, goal, models, root, fallback=False, auto_update_models=True, recovery=None):
+    prompt = prompt_for(driver, goal, models, root, fallback, auto_update_models, recovery)
     if driver == 'claude':
         return [command, '--model', models[driver], '--effort', 'max', prompt]
     if driver == 'codex':
@@ -109,7 +118,22 @@ def command_for(driver, command, goal, models, root, fallback=False, auto_update
     return [command, '--model', models[driver], '--thinking', '--prompt', prompt]
 
 
-def launch_plan(args, models, root):
+def recovery_for(root, state, repair=False):
+    import checkpoints
+    with ccloop.locked(Path(root)):
+        current = ccloop.read(Path(root))
+        ccloop.require(current['run_id'] == state['run_id']
+                       and current['generation'] == state['generation']
+                       and current['revision'] == state['revision']
+                       and current['enabled'] and current['phase'] == 'ready'
+                       and not current.get('pending') and not ccloop.limit(current),
+                       'Run changed or stopped before context restoration')
+        if repair:
+            checkpoints.write(Path(root), current)
+        return checkpoints.bundle(Path(root), current)
+
+
+def launch_plan(args, models, root, recovery=None):
     driver = args.driver
     command, candidate = executable(driver)
     reason = None
@@ -121,11 +145,11 @@ def launch_plan(args, models, root):
             if command is None:
                 reason += f'; kimi executable is missing or not executable: {candidate}'
     fallback = driver != args.driver
-    return {
+    plan = {
         'requested_driver': args.driver,
         'driver': driver,
         'argv': command_for(driver, command or candidate, args.goal, models, root, fallback,
-                            not any(getattr(args, name + '_model') is not None for name in MODELS)),
+                            not any(getattr(args, name + '_model') is not None for name in MODELS), recovery),
         'project': str(args.project),
         'root': root,
         'models': models,
@@ -133,6 +157,20 @@ def launch_plan(args, models, root):
         'available': command is not None,
         'reason': reason,
     }
+    if getattr(args, 'managed', False):
+        argv = [sys.executable, str(Path(__file__).resolve()), '--managed', '--driver', args.driver,
+                '--project', str(args.project), '--goal', args.goal,
+                '--context-threshold', str(args.context_threshold), '--access-timeout', str(args.access_timeout)]
+        if root:
+            argv += ['--root', root]
+        for name in MODELS:
+            if getattr(args, name + '_model') is not None:
+                argv += ['--' + name + '-model', getattr(args, name + '_model')]
+        if args.offline_models:
+            argv.append('--offline-models')
+        plan.update(mode='managed', context_threshold=args.context_threshold, argv=argv,
+                    context_policy='Native active-context measurements when available; otherwise fresh bounded turns')
+    return plan
 
 
 def run_driver(command, project):
@@ -261,10 +299,11 @@ def interactive(args, models, root, overrides, state, plan):
             return 130 if attempt.get('failure_kind') == 'interrupted' else 2
         if root:
             state, _ = read_run(args, root, overrides, driver, expected=state)
+        recovery = recovery_for(root, state, repair=True) if root else None
         command, candidate = executable(driver)
         code, error = run_driver(
             command_for(driver, command or candidate, args.goal, models, root, fallback,
-                        auto_update_models=not overrides), args.project,
+                        auto_update_models=not overrides, recovery=recovery), args.project,
         )
         if error:
             print(f'ccloop: {driver}: {error}', file=sys.stderr)
@@ -299,11 +338,15 @@ def main(argv=None):
     parser.add_argument('goal_words', nargs='*', metavar='GOAL',
                         help='Goal text; quote it to preserve whitespace verbatim')
     parser.add_argument('--driver', default='codex', choices=tuple(MODELS),
-                        help='Interactive driver (default: codex)')
+                        help='Driver client (default: codex)')
     parser.add_argument('--project', default=Path.cwd(), type=Path,
                         help='Project directory (default: current directory)')
     parser.add_argument('--goal', help='Verbatim goal text instead of a positional goal')
     parser.add_argument('--root', type=Path, help='Existing private ledger to resume')
+    parser.add_argument('--managed', action='store_true',
+                        help='Manage bounded driver turns with saved checkpoints and fresh context')
+    parser.add_argument('--context-threshold', type=float,
+                        help='Managed active-context rotation fraction, between 0 and 1 (default: 0.7)')
     for driver in MODELS:
         parser.add_argument('--' + driver + '-model')
     parser.add_argument('--access-timeout', type=float, default=300,
@@ -328,12 +371,30 @@ def main(argv=None):
         parser.error('model IDs must not be empty')
     if not math.isfinite(args.access_timeout) or args.access_timeout <= 0:
         parser.error('access-timeout must be positive and finite')
+    if args.context_threshold is not None and not args.managed:
+        parser.error('--context-threshold requires --managed')
+    if args.context_threshold is None:
+        args.context_threshold = .7
+    if not math.isfinite(args.context_threshold) or not 0 < args.context_threshold < 1:
+        parser.error('context-threshold must be finite and between 0 and 1')
     root = str(args.root.expanduser().resolve()) if args.root else None
     state = None
     try:
         if root:
-            state, models = read_run(args, root, overrides, args.driver)
-            if not args.offline_models and not args.dry_run:
+            if args.managed:
+                state = ccloop.read(Path(root))
+                ccloop.require(state['config']['goal'] == args.goal, 'Goal differs from the frozen ledger goal')
+                ccloop.require(Path(state['config']['project']).resolve() == args.project,
+                               'Project differs from the frozen ledger project')
+                models = state.get('active_models', state['config']['models'])
+                ccloop.require(isinstance(models, dict) and set(models) == set(MODELS)
+                               and all(isinstance(value, str) and value.strip() for value in models.values()),
+                               'Saved ledger model selections are invalid')
+                ccloop.require(all(models[name] == value for name, value in overrides.items()),
+                               'Model override differs from the frozen ledger model selections')
+            else:
+                state, models = read_run(args, root, overrides, args.driver)
+            if not args.managed and not args.offline_models and not args.dry_run:
                 state = ccloop.refresh_models(Path(root), for_consult=True)
                 state, models = read_run(args, root, overrides, args.driver, expected=state)
         else:
@@ -344,7 +405,11 @@ def main(argv=None):
                 print('ccloop models: ' + warning, file=sys.stderr)
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.error(str(error))
-    plan = launch_plan(args, models, root)
+    try:
+        recovery = recovery_for(root, state) if root and not args.managed else None
+        plan = launch_plan(args, models, root, recovery)
+    except (OSError, ValueError, KeyError, TypeError, ImportError) as error:
+        parser.error(str(error))
     if args.dry_run:
         print(json.dumps(plan, indent=2))
         return 0
@@ -352,6 +417,9 @@ def main(argv=None):
         print('ccloop: ' + plan['reason'], file=sys.stderr)
         return 127
     try:
+        if args.managed:
+            import managed
+            return managed.run(args, models, root, overrides)
         return interactive(args, models, root, overrides, state, plan)
     except FileNotFoundError as error:
         print('ccloop: ' + str(error), file=sys.stderr)

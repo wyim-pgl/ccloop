@@ -1,6 +1,6 @@
 ---
 name: ccloop
-description: Use when a user says ccloop followed by a goal, or wants continuous Claude Code and Codex collaboration that resolves ordinary questions through the other model, with frontier models and Kimi access fallback.
+description: Use when a user says ccloop followed by a goal, ccloop clear, or ccloop resume ROOT, or wants continuous Claude Code and Codex collaboration that resolves ordinary questions through the other model, with frontier models, saved recovery files and Kimi access fallback.
 ---
 
 # ccloop
@@ -22,7 +22,10 @@ next step, obtain peer advice and continue under that delegation. It does not
 delegate new account permissions, credentials or unrelated external actions.
 
 If `CCLOOP_REVIEWER` is set, answer only the supplied consultation: the calling
-driver owns the loop. For an existing desktop ledger (`schema: 1` with a Claude
+driver owns the loop. If `CCLOOP_MANAGED_WORKER` is set, follow only the supplied
+bounded worker task and response schema. The manager owns checkpoints, peer
+questions, reviews, continuation and context rotation; return your actual work
+and uncertainties to it. For an existing desktop ledger (`schema: 1` with a Claude
 UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
 
 ## Start from a goal
@@ -53,6 +56,9 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    Keep its `journal_path`: the helper automatically maintains the private
    `ccloop.md` question/answer journal. Read [journal recording](references/journal.md)
    before the first driver decision or work checkpoint.
+   For automatic context replacement, use the [managed context workflow](references/context.md)
+   with this same root. Let the manager own execution while you observe it;
+   keep one active driver for the goal.
 
 ## Work, ask, verify, continue
 
@@ -93,8 +99,15 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    conclusion to the journal, and give the user its absolute `journal_path`.
 
 Record checkpoints often enough that another participant can continue from the
-last verified work. This is an active-session loop, not a background scheduling
-service. A closed client does not keep executing work by itself.
+last verified work. After a bounded step or a material decision, use the structured
+`checkpoint` command in [context recovery](references/context.md) to save current
+notes, completed work, next steps and quarantined claims. The helper maintains
+`intend.md`, `resume.md`, `todo.md` and `quarantine.md` from the durable ledger.
+On resuming after compaction or a session change, run `context` and read the
+actual restored content before work.
+Existing interactive clients rely on their host's session lifecycle; managed mode
+can replace its worker sessions while its manager process stays alive. Neither
+mode installs a background service. A closed manager does not continue by itself.
 Check due status at normal tool boundaries; use nonblocking job observations for
 long calculations so a single blocking wait does not hide the 30-minute review.
 The helper's `heartbeat` prints the durable prompt for a supported scheduler;
@@ -129,6 +142,43 @@ Peer advice cannot supply the user's private facts, credentials or new authority
 Treat `requires_user_input` as advisory: verify the supposed missing fact or
 permission is essential and genuinely unavailable before interrupting the user.
 Complete any independent preparation first, then ask only for that necessary item.
+
+## Clear the context
+
+`/ccloop clear` in Claude Code, `$ccloop clear` in Codex, or `ccloop clear` in the
+terminal asks the driver to save the run, obtain a peer review of the saved
+recovery files, and then restart with an empty context. A skill cannot clear the
+host chat itself, so the restart is a user step that the driver prepares:
+
+1. Write a checkpoint packet with `summary`, `next_steps`, `completed`,
+   `working_notes` and `quarantine`: superseded assumptions, refuted claims,
+   abandoned approaches and stale numbers that a fresh context must not reuse.
+2. Run `python3 /path/to/ccloop/scripts/ccloop.py --root /private/run clear
+   --packet FILE --reason 'User requested a context clear'`. The helper saves the
+   checkpoint, regenerates `resume.md`, `intend.md`, `todo.md` and
+   `quarantine.md`, sends their actual text to the opposite model as a
+   `--stage handoff` review, and records the accepted review and the restore
+   command in the ledger and `ccloop.md`. A rejected review leaves the
+   checkpoint saved and exits nonzero; fix the packet and run `clear` again.
+3. Report the review verdict, any issues it raised, and the `restore` lines
+   from the result. Tell the user to run `/clear` (Claude Code) or `/new`
+   (Codex) and then enter `/ccloop resume /private/run` or
+   `$ccloop resume /private/run`. The terminal restore line starts the frontier
+   driver with the same root through `scripts/launch.py`.
+
+While a managed runtime owns the run, `clear` only records a rotation request;
+the manager starts a fresh worker context at its next accepted turn and logs the
+request in the ledger. Do not clear during an in-flight consultation.
+
+## Resume an existing run
+
+`/ccloop resume /private/run` or `$ccloop resume /private/run` continues an
+existing ledger in a fresh context. Run `status` and `context`, read all four
+restored files from the `context` output, and treat `quarantine.md` entries as
+not to be reused or retried without new evidence. Honor a stopped, blocked,
+complete or exhausted state, reconcile saved artifact identities with the actual
+files, and then continue the loop from the recorded next steps. Driver notes are
+reports; only accepted independent reviews establish criterion evidence.
 
 ## Access failures and stopping
 

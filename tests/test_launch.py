@@ -657,6 +657,88 @@ class LauncherTest(unittest.TestCase):
         self.assertIn('--root', result.stderr)
         self.assertIn('checkpoint', result.stderr)
 
+    def test_managed_dry_run_preserves_goal_and_threshold_without_model_calls(self):
+        result = self.terminal('목표를 그대로 유지', '--managed', '--context-threshold', '.6', '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertEqual(plan['mode'], 'managed')
+        self.assertEqual(plan['context_threshold'], .6)
+        self.assertEqual(plan['driver'], 'codex')
+        self.assertIn('--managed', plan['argv'])
+        self.assertIn('목표를 그대로 유지', plan['argv'])
+        self.assertNotIn('--dry-run', plan['argv'])
+        self.assertEqual(self.all_calls(), [])
+
+    def test_managed_threshold_rejects_invalid_values_before_work(self):
+        for value in ('0', '1', '-.1', 'nan', 'inf'):
+            with self.subTest(value=value):
+                result = self.terminal('Goal', '--managed', '--context-threshold', value)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('context-threshold', result.stderr)
+        self.assertEqual(self.all_calls(), [])
+
+    def test_context_threshold_requires_managed_mode(self):
+        result = self.terminal('Goal', '--context-threshold', '.6')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--managed', result.stderr)
+        self.assertEqual(self.all_calls(), [])
+
+    def test_managed_dispatch_preserves_frozen_root_and_manager_exit_status(self):
+        root = self.ledger('managed', 'codex', 'Original managed goal').parent
+        wrapper = self.base / 'managed_launch.py'
+        wrapper.write_text('''import json, os, pathlib, sys, types
+sys.path.insert(0, sys.argv.pop(1))
+module = types.ModuleType('managed')
+def run(args, models, root, overrides):
+    pathlib.Path(os.environ['MANAGER_CAPTURE']).write_text(json.dumps({
+        'goal': args.goal, 'driver': args.driver, 'project': str(args.project),
+        'root': root, 'threshold': args.context_threshold, 'models': models}))
+    return 7
+module.run = run
+sys.modules['managed'] = module
+import launch
+raise SystemExit(launch.main(sys.argv[1:]))
+''')
+        capture = self.base / 'managed-call.json'
+        self.env['MANAGER_CAPTURE'] = str(capture)
+        result = subprocess.run([sys.executable, str(wrapper), str(SCRIPT.parent),
+            '--managed', '--driver', 'codex', '--project', str(self.project),
+            '--goal', 'Original managed goal', '--root', str(root), '--offline-models'],
+            cwd=self.base, env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        received = json.loads(capture.read_text())
+        self.assertEqual(received['goal'], 'Original managed goal')
+        self.assertEqual(received['root'], str(root))
+        self.assertEqual(received['threshold'], .7)
+        self.assertEqual(self.all_calls(), [])
+
+    def test_interactive_existing_root_injects_actual_recovery_text_and_repairs_files(self):
+        root = self.ledger('recovery', 'claude', 'Keep the exact goal').parent
+        packet = self.base / 'checkpoint.json'
+        packet.write_text(json.dumps({'summary': 'RECOVERY_SUMMARY_741',
+            'next_steps': ['NEXT_REAL_STEP_742'], 'completed': ['Completed actual inspection'],
+            'working_notes': 'Working context for the new session.',
+            'quarantine': [{'statement': 'STALE_ASSUMPTION_743', 'reason': 'Refuted by the actual check'}]}))
+        saved = subprocess.run([sys.executable, str(HELPER), '--root', str(root),
+            'checkpoint', '--packet', str(packet)], env=self.env,
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(saved.returncode, 0, saved.stderr)
+        before = (root / 'state.json').read_bytes()
+        for name in ('resume.md', 'intend.md', 'todo.md', 'quarantine.md'):
+            (root / name).unlink(missing_ok=True)
+        result = self.launch('claude', 'Keep the exact goal', '--root', str(root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prompt = self.invocations()[0]['argv'][-1]
+        self.assertIn('RECOVERY_SUMMARY_741', prompt)
+        self.assertIn('NEXT_REAL_STEP_742', prompt)
+        self.assertIn('STALE_ASSUMPTION_743', prompt)
+        self.assertIn('quarantine.md are superseded or refuted', prompt)
+        for name in ('resume.md', 'intend.md', 'todo.md', 'quarantine.md'):
+            self.assertIn(name, prompt)
+            self.assertTrue((root / name).is_file())
+        self.assertTrue(prompt.endswith('Goal (verbatim):\nKeep the exact goal'))
+        self.assertEqual((root / 'state.json').read_bytes(), before)
+
 
 if __name__ == '__main__':
     unittest.main()

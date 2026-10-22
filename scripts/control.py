@@ -79,6 +79,10 @@ def validate_config(c, root):
     require(isinstance(c.get('watch'), list) and c['watch'] and
             all(nonempty(x) and not x.startswith('/') and '..' not in Path(x).parts
                 for x in c['watch']), 'watch must contain relative file glob patterns')
+    require(isinstance(c.get('watch_exclude', []), list) and
+            all(nonempty(x) and not x.startswith('/') and '..' not in Path(x).parts
+                for x in c.get('watch_exclude', [])),
+            'watch_exclude must contain relative file glob patterns')
     c = copy.deepcopy(c)
     c['project'] = str(project)
     return c
@@ -101,6 +105,10 @@ def snapshot(s):
             if not any(fnmatch.fnmatchcase(relative, pattern) or
                        (pattern.startswith('**/') and fnmatch.fnmatchcase(relative, pattern[3:]))
                        for pattern in s['config']['watch']):
+                continue
+            if any(fnmatch.fnmatchcase(relative, pattern) or
+                   (pattern.startswith('**/') and fnmatch.fnmatchcase(relative, pattern[3:]))
+                   for pattern in s['config'].get('watch_exclude', [])):
                 continue
             require(not path.is_symlink(), f'Watched symlink needs explicit reconciliation: {relative}')
             require(len(files) < 10000, 'Too many watched files; narrow watch patterns')

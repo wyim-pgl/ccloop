@@ -30,6 +30,19 @@ driver checkpoints with `record --after-round ROUND --entry FILE`.
 `status` shows the absolute `journal_path`. See [journal recording](references/journal.md)
 and [the work entry example](assets/ccloop.work.example.json).
 
+Say `/ccloop clear` (Claude Code) or `$ccloop clear` (Codex) to save the run,
+have the other model review the saved `resume.md`, `intend.md`, `todo.md` and
+`quarantine.md`, and receive the restore command for a cleared context; then
+`/clear` or `/new` and `/ccloop resume ROOT` continues from those files.
+
+For automatic worker context replacement, run `ccloop --managed 'The goal'`.
+The same private run maintains **`intend.md`**, **`resume.md`**, **`todo.md`**
+and **`quarantine.md`**.
+Before a new worker starts, the manager loads their validated contents while
+preserving the original goal and review clock. Existing-root interactive launches
+also receive the recovery contents. See [context recovery](references/context.md)
+for the threshold, client capabilities and interrupted-work recovery.
+
 ```mermaid
 flowchart LR
     D[Claude Code or Codex works toward the goal] --> H[30-minute review checkpoint]
