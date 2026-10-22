@@ -83,6 +83,7 @@ class ProviderBoundaryTest(fixtures.CLIBase):
         messages = [
             'The selected model may not exist or you may not have access to it.',
             "You've hit your limit; resets tomorrow",
+            "You've hit your session limit · resets 4:30pm (America/Los_Angeles)",
             'API Error: 529 overloaded_error',
             'API Error: 500 Internal server error',
         ]
@@ -163,6 +164,42 @@ class ProviderBoundaryTest(fixtures.CLIBase):
         self.assertEqual(set(output['providers']), {'claude', 'codex', 'kimi'})
         self.assertFalse(self.root.exists())
         self.assertEqual(self.calls(), [])
+
+
+class LargePromptDeliveryTest(unittest.TestCase):
+    def test_native_claude_api_status_controls_access_classification(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'provider_status_fixture', fixtures.SCRIPT.parent / 'providers.py')
+        providers = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(providers)
+        for code, expected in [(429, 'access'), (403, 'access'), (400, 'provider')]:
+            with self.subTest(code=code):
+                payload = {'is_error': True, 'api_error_status': code,
+                           'result': 'Request could not be completed.', 'modelUsage': {}}
+                with self.assertRaises(providers.ProviderError) as raised:
+                    providers.parse_response('claude', json.dumps(payload),
+                        {'requested_model': 'claude-fable-5-1', 'observed_models': []})
+                self.assertEqual(raised.exception.kind, expected)
+
+    def test_delayed_reader_receives_entire_large_unicode_prompt(self):
+        import importlib.util
+        import tempfile
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location(
+            'provider_delivery_fixture', fixtures.SCRIPT.parent / 'providers.py')
+        providers = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(providers)
+        prompt = '한글 evidence\n' * 30000
+        code = ('import sys,time,json; time.sleep(.35); text=sys.stdin.read(); '
+                'print(json.dumps({"structured_output":{"received":len(text)},'
+                '"modelUsage":{"claude-fable-5-1":{}}}))')
+        with tempfile.TemporaryDirectory() as name:
+            with patch.object(providers, 'command', return_value=[sys.executable, '-c', code]):
+                attempt, report = providers.invoke('claude', {'models': providers.MODELS},
+                    prompt, Path(name) / 'result', 2, lambda: False, lambda details: True)
+        self.assertEqual(attempt['status'], 'received', attempt)
+        self.assertEqual(report, {'received': len(prompt)})
 
 
 if __name__ == '__main__':

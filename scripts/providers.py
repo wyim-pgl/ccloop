@@ -16,7 +16,7 @@ ACCESS = re.compile(
     r'log in required|invalid api.?key|invalid.?token|expired.{0,25}token|'
     r'token.{0,25}expired|permission denied|access denied|does not have access|may not have access|'
     r'model.{0,60}(not found|not available|unavailable|not supported)|'
-    r'rate.?limit|usage.?limit|hit your limit|quota|insufficient.{0,15}(credit|balance)|'
+    r'rate.?limit|usage.?limit|session.?limit|hit your (?:session )?limit|quota|insufficient.{0,15}(credit|balance)|'
     r'too many requests|service unavailable|overloaded|internal server error|connection refused|connection error|'
     r'connection reset|could not connect|failed to connect|timed? out|timeout|'
     r'\b(401|403|429|500|502|503|504|529)\b', re.IGNORECASE)
@@ -99,7 +99,9 @@ def parse_response(provider, stdout, attempt):
         attempt['observed_models'] = sorted(usage) if isinstance(usage, dict) else []
         if value.get('is_error'):
             message = str(value.get('result', value))
-            raise ProviderError(message, 'access' if ACCESS.search(message) else 'provider')
+            native_access = value.get('api_error_status') in (401, 403, 429, 500, 502, 503, 504, 529)
+            diagnostic = message + ' ' + str(value.get('api_error', ''))
+            raise ProviderError(message, 'access' if native_access or ACCESS.search(diagnostic) else 'provider')
         report = value.get('structured_output', value.get('result'))
     else:
         report = None
@@ -172,19 +174,25 @@ def invoke(provider, config, prompt, directory, timeout, cancelled, started):
             (temporary / 'work').mkdir()
             argv = command(provider, config, temporary)
             attempt['argv'] = argv
-            with open(attempt['stdout_path'], 'w', encoding='utf-8') as out, open(attempt['stderr_path'], 'w', encoding='utf-8') as err:
+            # A timed-out communicate(input=...) may leave a large stdin pipe
+            # partially written. Retrying with input=None does not re-register
+            # stdin for writes, so the child can wait forever for the remainder.
+            # A private, rewound file provides the complete UTF-8 input and EOF
+            # independently of CLI startup speed, while polling stays cancellable.
+            prompt_path = temporary / 'stdin.json'
+            prompt_path.write_text(prompt, encoding='utf-8')
+            with prompt_path.open('r', encoding='utf-8') as source, open(attempt['stdout_path'], 'w', encoding='utf-8') as out, open(attempt['stderr_path'], 'w', encoding='utf-8') as err:
                 if cancelled():
                     raise ProviderError('Consultation ownership was revoked before launch', 'cancelled')
                 environment = dict(os.environ, CCLOOP_CONSULTANT='1', CCLOOP_REVIEWER='1')
                 environment.pop('CLAUDECODE', None)
-                process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=out, stderr=err,
+                process = subprocess.Popen(argv, stdin=source, stdout=out, stderr=err,
                     text=True, cwd=temporary / 'work', start_new_session=True,
                     env=environment)
                 attempt.update(pid=process.pid, process_identity=process_identity(process.pid))
                 if not started(attempt):
                     raise ProviderError('Consultation ownership was revoked during launch', 'cancelled')
                 end = time.monotonic() + timeout
-                first = True
                 while True:
                     if cancelled():
                         raise ProviderError('Consultation stopped or superseded', 'cancelled')
@@ -192,10 +200,10 @@ def invoke(provider, config, prompt, directory, timeout, cancelled, started):
                     if remaining <= 0:
                         raise ProviderError(f'{provider} timed out after {timeout:g} seconds', 'access')
                     try:
-                        process.communicate(input=prompt if first else None, timeout=min(.1, remaining))
+                        process.communicate(timeout=min(.1, remaining))
                         break
                     except subprocess.TimeoutExpired:
-                        first = False
+                        pass
                 attempt['returncode'] = process.returncode
                 out.flush()
                 err.flush()
