@@ -583,6 +583,10 @@ except ValueError as error:
         self.assertEqual(set(sent['packet']['recovery_files']), set(self.names))
         self.assertIn('CLEAR_QUARANTINE_906', sent['packet']['recovery_files']['quarantine.md'])
         self.assertEqual(sent['packet']['driver_packet']['quarantine'][0]['statement'], 'CLEAR_QUARANTINE_906')
+        observed = {item['path']: item for item in sent['packet']['observed_files']}
+        self.assertEqual(observed['result.txt']['text'], 'fixture result\n')
+        self.assertEqual(observed['result.txt']['sha256'], state['review_snapshot']['files']['result.txt'])
+        self.assertEqual(sent['packet']['coverage']['omitted_count'], 0)
         self.assertIn('CLEAR_QUARANTINE_906', self.mirror_text()['quarantine.md'])
         self.assertIn('clear', (self.root / 'ccloop.md').read_text())
 

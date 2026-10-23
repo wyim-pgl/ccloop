@@ -489,15 +489,21 @@ def clear(root, packet_path, reason):
             return s, True, {'mode': 'managed', 'rotate_requested': True,
                              'notice': 'A managed runtime owns this run; its next accepted turn starts a fresh worker context.'}
     s = checkpoint(root, packet_path)
+    import managed
     with locked(root):
         s = read(root)
         bundle = checkpoints.bundle(root, s)
+        # The reviewer runs outside the project, so supply bounded actual file
+        # excerpts; without them every driver claim about the files is unverifiable.
+        files, coverage = managed.observed_files(s)
     evidence = {'recovery_files': bundle['files'], 'bundle_digest': bundle['digest'],
                 'driver_packet': packet, 'reason': reason,
+                'observed_files': files, 'coverage': coverage,
                 'notice': ('Handoff review before context replacement: assess whether these recovery files '
                            'faithfully capture state for a fresh context; name missing next steps, driver '
                            'claims presented as facts without evidence, and quarantine entries that are '
-                           'wrong or missing.')}
+                           'wrong or missing. Driver checks are reports, not independent proof; actual '
+                           'watched file excerpts are supplied in observed_files.')}
     s, ok = dispatch(root, evidence, 'handoff')
     extra = {'mode': 'interactive', 'bundle_digest': bundle['digest'], 'restore': restore_commands(root, s)}
     if not ok:
