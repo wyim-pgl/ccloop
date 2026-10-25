@@ -11,6 +11,7 @@ import time
 
 
 MODELS = {'claude': 'claude-fable-5-1', 'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'}
+FENCE = re.compile(r'```(?:json)?\s*\n(.*?)\n```', re.DOTALL)
 ACCESS = re.compile(
     r'authentication|unauthenticated|unauthorized|not logged in|login required|'
     r'log in required|invalid api.?key|invalid.?token|expired.{0,25}token|'
@@ -90,6 +91,12 @@ def command(provider, config, temporary):
         '--work-dir', str(temporary / 'work'), '--max-steps-per-turn', '1', '--max-ralph-iterations', '0']
 
 
+def strip_fence(text):
+    """A reviewer may wrap its JSON report in a Markdown code fence; the report is the inside."""
+    match = FENCE.fullmatch(text.strip())
+    return match.group(1) if match else text
+
+
 def parse_response(provider, stdout, attempt):
     if provider == 'claude':
         value = json.loads(stdout)
@@ -130,7 +137,7 @@ def parse_response(provider, stdout, attempt):
         attempt['model_mismatch'] = True
         raise ProviderError('Selected Claude model was not served; observed: ' + ', '.join(attempt['observed_models']), 'access')
     if isinstance(report, str):
-        report = json.loads(report)
+        report = json.loads(strip_fence(report))
     if not isinstance(report, dict):
         raise ProviderError('Reviewer did not return a JSON report object')
     return report

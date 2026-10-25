@@ -204,3 +204,17 @@ class LargePromptDeliveryTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_fenced_kimi_report_is_parsed(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'provider_fence_fixture', fixtures.SCRIPT.parent / 'providers.py')
+        providers = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(providers)
+        report = {'round': 1, 'summary': 'fenced'}
+        for content in (json.dumps(report), '```json\n' + json.dumps(report, indent=1) + '\n```'):
+            with self.subTest(content=content[:7]):
+                stdout = json.dumps({'role': 'assistant', 'content': content})
+                parsed = providers.parse_response('kimi', stdout,
+                    {'requested_model': 'kimi-code/k3', 'observed_models': []})
+                self.assertEqual(parsed, report)
