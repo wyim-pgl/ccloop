@@ -22,6 +22,7 @@ import time
 
 import ccloop
 import providers
+import runtime_paths
 from providers import MODELS
 
 
@@ -48,7 +49,7 @@ def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=Tr
     else:
         start = f'Read and follow the ccloop skill at {json.dumps(str(SKILL))}.'
     instructions = [
-        start,
+        start + ' --interactive',
         f'Act as the interactive {driver} driver and carry out the goal below. '
         'Obtain independent reviews at the plan, milestone, and final gates.',
         'Continue autonomously until the original goal is verified complete, the user '
@@ -176,7 +177,7 @@ def launch_plan(args, models, root, recovery=None):
 def run_driver(command, project):
     """Preserve normal terminal behavior, including child output and input."""
     try:
-        code = subprocess.run(command, cwd=project).returncode
+        code = subprocess.run(command, cwd=project, env=runtime_paths.client_env(command[0])).returncode
     except OSError as exc:
         # An executable can disappear after preflight or have a missing interpreter.
         if exc.errno == errno.ENOENT:
@@ -330,6 +331,7 @@ def interactive(args, models, root, overrides, state, plan):
 
 
 def main(argv=None):
+    runtime_paths.configure()
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog='CCLOOP_CLAUDE_BIN, CCLOOP_CODEX_BIN, and CCLOOP_KIMI_BIN may each '
@@ -343,8 +345,12 @@ def main(argv=None):
                         help='Project directory (default: current directory)')
     parser.add_argument('--goal', help='Verbatim goal text instead of a positional goal')
     parser.add_argument('--root', type=Path, help='Existing private ledger to resume')
-    parser.add_argument('--managed', action='store_true',
-                        help='Manage bounded driver turns with saved checkpoints and fresh context')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--managed', dest='managed', action='store_true',
+                      help='Manage work until verified completion (default)')
+    mode.add_argument('--interactive', dest='managed', action='store_false',
+                      help='Start one interactive client session without automatic turn management')
+    parser.set_defaults(managed=True)
     parser.add_argument('--context-threshold', type=float,
                         help='Managed active-context rotation fraction, between 0 and 1 (default: 0.7)')
     for driver in MODELS:
@@ -372,7 +378,7 @@ def main(argv=None):
     if not math.isfinite(args.access_timeout) or args.access_timeout <= 0:
         parser.error('access-timeout must be positive and finite')
     if args.context_threshold is not None and not args.managed:
-        parser.error('--context-threshold requires --managed')
+        parser.error('--context-threshold requires managed mode; remove --interactive')
     if args.context_threshold is None:
         args.context_threshold = .7
     if not math.isfinite(args.context_threshold) or not 0 < args.context_threshold < 1:

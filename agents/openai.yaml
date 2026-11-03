@@ -1,4 +1,4 @@
 interface:
   display_name: "ccloop"
   short_description: "Continuous peer-assisted work toward your goal"
-  default_prompt: "Use $ccloop to finish my goal continuously, ask the other model ordinary questions, and verify completion."
+  default_prompt: "Use $ccloop to start the managed runtime for my goal, resolve ordinary questions through the other model, and observe it until independently verified completion."

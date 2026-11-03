@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 import test_ccloop as fixtures
 
@@ -167,12 +168,18 @@ class ProviderBoundaryTest(fixtures.CLIBase):
 
 
 class LargePromptDeliveryTest(unittest.TestCase):
-    def test_native_claude_api_status_controls_access_classification(self):
+    def load_provider_module(self, name):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            'provider_status_fixture', fixtures.SCRIPT.parent / 'providers.py')
+            name, fixtures.SCRIPT.parent / 'providers.py')
         providers = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(providers)
+        # Match the real CLI's import environment for sibling runtime helpers.
+        with patch.object(sys, 'path', [str(fixtures.SCRIPT.parent), *sys.path]):
+            spec.loader.exec_module(providers)
+        return providers
+
+    def test_native_claude_api_status_controls_access_classification(self):
+        providers = self.load_provider_module('provider_status_fixture')
         for code, expected in [(429, 'access'), (403, 'access'), (400, 'provider')]:
             with self.subTest(code=code):
                 payload = {'is_error': True, 'api_error_status': code,
@@ -183,13 +190,8 @@ class LargePromptDeliveryTest(unittest.TestCase):
                 self.assertEqual(raised.exception.kind, expected)
 
     def test_delayed_reader_receives_entire_large_unicode_prompt(self):
-        import importlib.util
         import tempfile
-        from unittest.mock import patch
-        spec = importlib.util.spec_from_file_location(
-            'provider_delivery_fixture', fixtures.SCRIPT.parent / 'providers.py')
-        providers = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(providers)
+        providers = self.load_provider_module('provider_delivery_fixture')
         prompt = '한글 evidence\n' * 30000
         code = ('import sys,time,json; time.sleep(.35); text=sys.stdin.read(); '
                 'print(json.dumps({"structured_output":{"received":len(text)},'
@@ -202,15 +204,8 @@ class LargePromptDeliveryTest(unittest.TestCase):
         self.assertEqual(report, {'received': len(prompt)})
 
 
-if __name__ == '__main__':
-    unittest.main()
-
     def test_fenced_kimi_report_is_parsed(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            'provider_fence_fixture', fixtures.SCRIPT.parent / 'providers.py')
-        providers = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(providers)
+        providers = self.load_provider_module('provider_fence_fixture')
         report = {'round': 1, 'summary': 'fenced'}
         for content in (json.dumps(report), '```json\n' + json.dumps(report, indent=1) + '\n```'):
             with self.subTest(content=content[:7]):
@@ -218,3 +213,7 @@ if __name__ == '__main__':
                 parsed = providers.parse_response('kimi', stdout,
                     {'requested_model': 'kimi-code/k3', 'observed_models': []})
                 self.assertEqual(parsed, report)
+
+
+if __name__ == '__main__':
+    unittest.main()

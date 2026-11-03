@@ -18,6 +18,7 @@ import time
 import control
 import checkpoints
 import providers
+import runtime_paths
 
 
 MAX_RESULT = 2_000_000
@@ -103,6 +104,7 @@ class Native:
             raise DriverError('Artifacts changed before native worker dispatch', 'uncertain_work')
         environment = dict(os.environ, CCLOOP_MANAGED_WORKER='1')
         environment.pop('CLAUDECODE', None)
+        environment = runtime_paths.client_env(argv[0], environment)
         self.err = open(self.directory / 'stderr.txt', 'wb')
         self.log = open(self.directory / 'stdout.jsonl', 'wb')
         try:

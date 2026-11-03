@@ -79,7 +79,13 @@ if mode in ('access', 'generic'):
     sys.exit(1)
 if mode in ('wait', 'spawn'):
     if mode == 'spawn':
-        subprocess.Popen([sys.executable, '-c', 'import pathlib,sys,time; time.sleep(1); pathlib.Path(sys.argv[1]).write_text("escaped")', str(base / 'escaped')])
+        child_code = ('import os,pathlib,sys,time\n'
+            'gate=os.environ.get("CCLOOP_TEST_ESCAPE_GATE")\n'
+            'if gate:\n'
+            ' while not pathlib.Path(gate).exists(): time.sleep(.02)\n'
+            'else: time.sleep(1)\n'
+            'pathlib.Path(sys.argv[1]).write_text("escaped")\n')
+        subprocess.Popen([sys.executable, '-c', child_code, str(base / 'escaped')])
     (base / 'ready').write_text('ready')
     while not (base / 'release').exists():
         time.sleep(.02)
@@ -553,6 +559,10 @@ class ConsultationTest(CLIBase):
     @unittest.skipUnless(sys.platform.startswith('linux'), 'Safe orphan signalling requires Linux process birth identity')
     def test_resume_reconciles_killed_helper_and_terminates_orphan_reviewer(self):
         self.init()
+        # The assertion concerns effects still pending when resume is requested,
+        # independently of CLI startup/fsync time or a user's delay before resume.
+        gate = self.base / 'escape-gate'
+        self.env['CCLOOP_TEST_ESCAPE_GATE'] = str(gate)
         child = self.start_waiting(mode='spawn')
         child.kill()
         child.communicate(timeout=5)
@@ -561,6 +571,7 @@ class ConsultationTest(CLIBase):
         self.assertIsNone(self.state()['pending'])
         self.assertEqual(self.state()['attempts'][0]['status'], 'interrupted')
         self.assertEqual(len(self.calls()), 1)
+        gate.touch()
         time.sleep(1.1)
         self.assertFalse((self.base / 'escaped').exists())
 

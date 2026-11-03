@@ -5,9 +5,11 @@ description: Use when a user says ccloop followed by a goal, ccloop clear, or cc
 
 # ccloop
 
-The current client drives the user's goal. Claude Code asks Codex for review;
-Codex asks Claude Code. Apply the review, verify the result, and continue until
-the original success criteria are established or a stopping condition is reached.
+The current client starts and observes the managed runtime for the user's goal.
+Its Claude Code worker asks Codex for review; its Codex worker asks Claude Code.
+The runtime applies the review, saves recovery files and starts the next bounded
+turn until the original success criteria are established or a stopping condition
+is reached. A skill instruction alone does not schedule another turn.
 Kimi replaces an inaccessible participant. The other participant still supplies
 independent review; Kimi reviewing its own work is not cross-review.
 
@@ -28,6 +30,27 @@ questions, reviews, continuation and context rotation; return your actual work
 and uncertainties to it. For an existing desktop ledger (`schema: 1` with a Claude
 UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
 
+## Default dispatch
+
+For an ordinary goal, **run the manager with an execution tool in this turn**.
+Resolve the installed runtime and project first; Windows hosts dispatch inside
+WSL using POSIX paths. Prefer the absolute installed wrapper when the shell does
+not include the user's local bin directory:
+
+```bash
+~/.local/bin/ccloop --driver codex --project /work/project --goal 'The exact user goal'
+```
+
+Use `--driver claude` from Claude Code. The manager creates a persistent private
+ledger, checks model access, obtains the initial independent review and continues
+the work. It does not need the outer client to prepare a plan-only response or
+ask routine design approval. Observe the process and its status until verified
+completion or an evidenced blocker; starting it is not completion.
+If the user supplies an existing root, first read its status/context and pass
+`--root` with its exact recorded goal, project and active driver. Prepare a custom
+configuration only when the supplied scope needs it, then launch in the same turn.
+Only explicit `--interactive` selects the host-driven protocol below.
+
 ## Start from a goal
 
 1. Identify the actual host: `claude`, `codex`, or a Kimi handoff. Keep the supplied
@@ -47,7 +70,13 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    `python3 /path/to/ccloop/scripts/ccloop.py doctor`. Use existing authenticated
    CLIs; there is no desktop UI or scheduler dependency. Missing primary CLI
    access may use Kimi; missing Kimi access is a reported blocker.
-4. Read [CLI protocol](references/cli-protocol.md). Create a private supervisor
+   The runtime requires a POSIX environment. A native Windows host must run the
+   helper and launcher through WSL, resolving both project and ledger paths inside
+   WSL; use the installed `ccloop` wrapper's Python runtime when available. Run
+   `doctor` there before dispatch. Do not run these scripts with Windows Python.
+4. Read [CLI protocol](references/cli-protocol.md). Normal dispatch lets the manager
+   initialize its ledger automatically. For a custom frozen configuration, create
+   a private supervisor
    directory outside the project and skill, normally under
    `$XDG_STATE_HOME/ccloop/` or `~/.local/state/ccloop/` with a unique run folder,
    so temporary-directory cleanup does not remove the journal. Initialize from
@@ -56,11 +85,29 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    Keep its `journal_path`: the helper automatically maintains the private
    `ccloop.md` question/answer journal. Read [journal recording](references/journal.md)
    before the first driver decision or work checkpoint.
-   For automatic context replacement, use the [managed context workflow](references/context.md)
-   with this same root. Let the manager own execution while you observe it;
-   keep one active driver for the goal.
+5. **Start the manager for every normal goal invocation.** Use the same root,
+   frozen project/goal and recorded active driver:
 
-## Work, ask, verify, continue
+   ```bash
+   python3 /path/to/ccloop/scripts/launch.py --root /private/run \
+     --project /work/project --driver codex --goal 'The exact frozen goal'
+   ```
+
+   Managed execution is the default; `--managed` remains an explicit alias.
+   Select the matching Claude driver for a Claude run. On an existing run use
+   its recorded driver, without silently handing it off to the current host.
+   Observe the manager process and read `status` while it works. Keep waiting
+   through bounded turns until independently verified completion or an actual
+   stopping condition. Report the real failure if it exits; an exit-zero process
+   alone is not proof of goal completion. Do not run a second driver, duplicate
+   its project work, or finish merely because the manager started.
+   Use [managed context recovery](references/context.md) for details. Only an
+   explicit request for `--interactive` selects the host-driven protocol below.
+
+## Explicit interactive mode: work, ask, verify, continue
+
+This protocol applies when the user explicitly chose `--interactive`. In normal
+managed runs the manager owns these steps; the outer client observes its result.
 
 1. Before substantial work, prepare a JSON packet containing the proposed plan,
    relevant source excerpts, constraints and checks actually performed. Consult
@@ -98,13 +145,15 @@ UI target), read [the legacy skill](references/legacy-desktop/SKILL.md) instead.
    Before ending, append the final work, verification results and user-facing
    conclusion to the journal, and give the user its absolute `journal_path`.
 
-Record checkpoints often enough that another participant can continue from the
+In explicit interactive mode, record checkpoints often enough that another participant can continue from the
 last verified work. After a bounded step or a material decision, use the structured
 `checkpoint` command in [context recovery](references/context.md) to save current
 notes, completed work, next steps and quarantined claims. The helper maintains
 `intend.md`, `resume.md`, `todo.md` and `quarantine.md` from the durable ledger.
 On resuming after compaction or a session change, run `context` and read the
 actual restored content before work.
+In managed mode the runtime owns these writes. The outer client observes status
+and must not append work/checkpoints or drive project changes concurrently.
 Existing interactive clients rely on their host's session lifecycle; managed mode
 can replace its worker sessions while its manager process stays alive. Neither
 mode installs a background service. A closed manager does not continue by itself.
@@ -174,11 +223,12 @@ request in the ledger. Do not clear during an in-flight consultation.
 
 `/ccloop resume /private/run` or `$ccloop resume /private/run` continues an
 existing ledger in a fresh context. Run `status` and `context`, read all four
-restored files from the `context` output, and treat `quarantine.md` entries as
-not to be reused or retried without new evidence. Honor a stopped, blocked,
-complete or exhausted state, reconcile saved artifact identities with the actual
-files, and then continue the loop from the recorded next steps. Driver notes are
-reports; only accepted independent reviews establish criterion evidence.
+restored files and honor stopped, blocked, complete or exhausted status. Reconcile
+saved artifact identities with the actual files. Start the same managed launcher
+using the recorded goal, project and active driver, then observe it through
+completion. This invocation does not authorize resetting a run or resuming an
+explicit user stop. Treat `quarantine.md` entries as not reusable without new
+evidence. Driver notes are reports; accepted independent reviews establish proof.
 
 ## Access failures and stopping
 

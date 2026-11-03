@@ -703,6 +703,8 @@ def dispatch(root, packet, stage, question=None):
 
 
 def main(argv=None):
+    import runtime_paths
+    runtime_paths.configure()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, help='Private ledger directory, outside the project and skill')
     commands = parser.add_subparsers(dest='action', required=True)

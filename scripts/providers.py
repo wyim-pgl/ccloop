@@ -8,6 +8,7 @@ import signal
 import subprocess
 import tempfile
 import time
+import runtime_paths
 
 
 MODELS = {'claude': 'claude-fable-5-1', 'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'}
@@ -60,8 +61,9 @@ def kimi_preflight():
 
 
 def command(provider, config, temporary):
-    prefix = list(config.get('commands', {}).get(provider, [provider]))
-    executable = shutil.which(prefix[0])
+    prefix = list(config.get('commands', {}).get(provider,
+        [os.environ.get('CCLOOP_' + provider.upper() + '_BIN', provider)]))
+    executable = shutil.which(os.path.expanduser(prefix[0]))
     if not executable:
         raise ProviderError(f'{provider}: executable not found: {prefix[0]}', 'access')
     prefix[0] = str(Path(executable).resolve())
@@ -193,6 +195,7 @@ def invoke(provider, config, prompt, directory, timeout, cancelled, started):
                     raise ProviderError('Consultation ownership was revoked before launch', 'cancelled')
                 environment = dict(os.environ, CCLOOP_CONSULTANT='1', CCLOOP_REVIEWER='1')
                 environment.pop('CLAUDECODE', None)
+                environment = runtime_paths.client_env(argv[0], environment)
                 process = subprocess.Popen(argv, stdin=source, stdout=out, stderr=err,
                     text=True, cwd=temporary / 'work', start_new_session=True,
                     env=environment)
@@ -258,8 +261,9 @@ def doctor(config=None):
     config = config or {}
     result = {'python': os.sys.version.split()[0], 'authentication_checked': False, 'providers': {}}
     for provider in MODELS:
-        executable = config.get('commands', {}).get(provider, [provider])[0]
-        item = {'executable': shutil.which(executable),
+        executable = config.get('commands', {}).get(provider,
+            [os.environ.get('CCLOOP_' + provider.upper() + '_BIN', provider)])[0]
+        item = {'executable': shutil.which(os.path.expanduser(executable)),
                 'requested_model': config.get('models', MODELS).get(provider, MODELS[provider])}
         if provider == 'kimi':
             try:

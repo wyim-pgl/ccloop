@@ -1,17 +1,25 @@
 # Context checkpoints and managed sessions
 
-Use managed mode when the goal should continue across worker context replacement:
+Ordinary goal invocations use managed mode and continue across worker contexts:
 
 ```bash
-ccloop --managed 'Complete the original goal and verify its result'
+ccloop 'Complete the original goal and verify its result'
 ccloop --managed --root /private/existing-run --context-threshold 0.7 \
   --goal 'The exact existing goal'
 ```
 
-The shorthand still defaults to Codex in the current directory. Select the actual
+`--managed` is an optional explicit alias. The shorthand defaults to Codex in the
+current directory. Select the actual
 driver with `--driver claude`, `--driver codex` or a justified Kimi handoff. The
-original interactive mode remains available without `--managed`. It injects the
+original interactive mode remains available with `--interactive`. It injects the
 same validated recovery content when starting from an existing `--root`.
+
+The launcher also finds common user-installed clients in a fresh shell, including
+NVM's Codex and the Kimi shim. Existing PATH selections and explicit
+`CCLOOP_*_BIN` overrides keep priority; no shell startup files or global settings
+are modified. NVM clients use their paired Node inside their own subprocess,
+so an older system Node does not break startup or change other applications.
+Windows clients use the WSL runtime and WSL paths.
 
 ## The recovery files
 

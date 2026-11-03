@@ -188,6 +188,83 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual([c['packet']['stage'] for c in calls if c['kind']=='review'],['plan','final'])
         self.assertEqual(state['managed']['context_policy'],'measured-current-context')
 
+    def test_plain_goal_launcher_continues_through_question_to_verified_completion(self):
+        self.settings(statuses=['question', 'continue', 'complete'])
+        original = self.state()
+        process = subprocess.run([sys.executable, str(SCRIPTS / 'launch.py'),
+            'Finish the fixture', '--root', str(self.root), '--project', str(self.project),
+            '--offline-models'], input='', env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        state = self.state()
+        self.assertEqual(state['phase'], 'complete', process.stderr)
+        self.assertEqual(state['run_id'], original['run_id'])
+        self.assertEqual(state['config'], original['config'])
+        calls = self.calls()
+        work = [entry for entry in calls if entry['kind'] == 'work']
+        self.assertEqual(len(work), 3)
+        self.assertIn('Use blue, as the fixture requires.', json.dumps(work[1]['packet']))
+        self.assertEqual([entry['packet']['stage'] for entry in calls if entry['kind'] == 'review'],
+                         ['plan', 'question', 'final'])
+
+    def test_plain_goal_with_context_threshold_selects_managed_mode_without_extra_flag(self):
+        process = subprocess.run([sys.executable, str(SCRIPTS / 'launch.py'),
+            'Finish the fixture', '--root', str(self.root), '--project', str(self.project),
+            '--context-threshold', '.6', '--dry-run', '--offline-models'],
+            input='', env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        plan = json.loads(process.stdout)
+        self.assertEqual(plan['mode'], 'managed')
+        self.assertEqual(plan['context_threshold'], .6)
+        self.assertEqual(self.calls(), [])
+
+    def test_fresh_plain_goal_uses_explicit_clients_when_they_are_not_on_path(self):
+        environment = dict(self.env, PATH='/usr/bin:/bin',
+                           XDG_STATE_HOME=str(self.base / 'state'),
+                           HOME=str(self.base / 'clean-home'),
+                           CCLOOP_MODEL_METADATA_OFFLINE='1')
+        Path(environment['HOME']).mkdir()
+        process = subprocess.run([sys.executable, str(SCRIPTS / 'launch.py'),
+            'Finish the fixture', '--project', str(self.project), '--offline-models'],
+            input='', env=environment, capture_output=True, text=True, timeout=60)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        states = list((self.base / 'state').glob('ccloop/runs/*/state.json'))
+        self.assertEqual(len(states), 1)
+        self.assertEqual(json.loads(states[0].read_text())['phase'], 'complete')
+        calls = self.calls()
+        self.assertEqual(len([entry for entry in calls if entry['kind'] == 'work']), 2)
+        self.assertEqual([entry['provider'] for entry in calls if entry['kind'] == 'review'],
+                         ['claude', 'claude'])
+
+    def test_nvm_runtime_is_used_for_managed_driver_and_independent_peer(self):
+        node_bin = self.base / '.nvm/versions/node/v22.0.0/bin'
+        node_bin.mkdir(parents=True)
+        codex = node_bin / 'codex'
+        codex.write_text(NATIVE.replace('#!/usr/bin/env python3', '#!/usr/bin/env node', 1))
+        codex.chmod(0o700)
+        node = node_bin / 'node'
+        import shlex
+        node.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+        node.chmod(0o700)
+        old_bin = self.base / 'old-bin'
+        old_bin.mkdir()
+        old = old_bin / 'node'
+        old.write_text('#!/bin/sh\necho wrong-node >&2\nexit 99\n')
+        old.chmod(0o700)
+        for driver in ('codex', 'claude'):
+            with self.subTest(driver=driver):
+                (self.base / 'calls.jsonl').unlink(missing_ok=True)
+                environment = dict(self.env, CCLOOP_CODEX_BIN=str(codex),
+                    PATH=str(old_bin) + ':/usr/bin:/bin',
+                    XDG_STATE_HOME=str(self.base / ('state-' + driver)),
+                    CCLOOP_MODEL_METADATA_OFFLINE='1')
+                process = subprocess.run([sys.executable, str(SCRIPTS / 'launch.py'),
+                    'Finish the fixture', '--driver', driver, '--project', str(self.project),
+                    '--offline-models'], input='', env=environment,
+                    capture_output=True, text=True, timeout=60)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                state_path = next((self.base / ('state-' + driver)).glob('ccloop/runs/*/state.json'))
+                self.assertEqual(json.loads(state_path.read_text())['phase'], 'complete')
+
     def test_claude_fresh_turns_do_not_treat_billing_as_context(self):
         import shutil
         shutil.rmtree(self.root)

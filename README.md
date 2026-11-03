@@ -35,7 +35,8 @@ have the other model review the saved `resume.md`, `intend.md`, `todo.md` and
 `quarantine.md`, and receive the restore command for a cleared context; then
 `/clear` or `/new` and `/ccloop resume ROOT` continues from those files.
 
-For automatic worker context replacement, run `ccloop --managed 'The goal'`.
+`ccloop 'The goal'` starts the automatic manager by default; `--managed` is an
+optional explicit alias. Use `--interactive` for one host-driven client session.
 The same private run maintains **`intend.md`**, **`resume.md`**, **`todo.md`**
 and **`quarantine.md`**.
 Before a new worker starts, the manager loads their validated contents while
@@ -121,11 +122,16 @@ The positional-goal shorthand defaults to Codex in the current directory. If the
 local `ccloop` shortcut is installed, `ccloop 'The goal'` is equivalent. Existing
 `--driver`, `--project` and `--goal` flags remain available.
 
-The launcher checks selected-model access with a small tool-free readiness call,
-then preserves normal interactive CLI permissions for project work. The readiness
+The default manager checks selected-model access with a small tool-free readiness
+call, then continues bounded work turns, peer questions and independent final
+review. `--interactive` retains the single-session workflow. Both modes preserve
+normal native CLI permissions for project work. The readiness
 timeout defaults to five minutes. Startup authentication, usage/model-access and
 service failures can use Kimi. `--dry-run` shows the command without calling a
-model. A running session's model is controlled by that client; skill text cannot
+model. Fresh WSL shells can discover user-installed Codex/Kimi without interactive
+shell setup. Existing client choices and explicit executable overrides take priority;
+NVM clients use their paired Node in their own process.
+A running session's model is controlled by that client; skill text cannot
 silently change it. Mid-session service failure may require starting Kimi with
 the saved root:
 

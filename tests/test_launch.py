@@ -1,4 +1,4 @@
-"""Launcher integration tests using executable fixtures, never real model CLIs."""
+"""Interactive launcher fixtures; real managed-process cases live in test_managed."""
 
 import json
 import os
@@ -96,13 +96,14 @@ class LauncherTest(unittest.TestCase):
     def launch(self, driver='claude', goal='Complete the supplied task', *extra):
         return subprocess.run(
             [sys.executable, str(SCRIPT), '--driver', driver,
-             '--project', str(self.project), '--goal', goal, '--offline-models', *extra],
+             '--project', str(self.project), '--goal', goal, '--offline-models', '--interactive', *extra],
             cwd=self.base, env=self.env, capture_output=True, text=True, timeout=10,
         )
 
     def terminal(self, *args):
+        mode = [] if '--managed' in args or '--interactive' in args else ['--interactive']
         return subprocess.run(
-            [sys.executable, str(SCRIPT), '--offline-models', *args],
+            [sys.executable, str(SCRIPT), '--offline-models', *mode, *args],
             cwd=self.project, env=self.env, capture_output=True, text=True, timeout=10,
         )
 
@@ -142,7 +143,7 @@ class LauncherTest(unittest.TestCase):
             state_path.write_text(json.dumps(state))
         return state_path
 
-    def test_positional_goal_defaults_to_codex_in_current_directory(self):
+    def test_interactive_positional_goal_defaults_to_codex_in_current_directory(self):
         result = self.terminal('Complete the supplied task')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([(call['driver'], call['probe']) for call in self.all_calls()],
@@ -154,13 +155,13 @@ class LauncherTest(unittest.TestCase):
         self.assertTrue(call['argv'][-1].endswith('Goal (verbatim):\nComplete the supplied task'))
         self.assertIn('"auto_update_models": true', call['argv'][-1])
 
-    def test_positional_goal_words_join_with_spaces(self):
+    def test_interactive_positional_goal_words_join_with_spaces(self):
         result = self.terminal('Complete', 'the', 'supplied', 'task')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.invocations()[0]['argv'][-1].endswith(
             'Goal (verbatim):\nComplete the supplied task'))
 
-    def test_positional_goal_retains_driver_project_and_model_overrides(self):
+    def test_interactive_positional_goal_retains_driver_project_and_model_overrides(self):
         result = self.terminal('Complete the supplied task', '--driver', 'kimi',
                                '--project', str(self.base), '--kimi-model', 'pinned-kimi')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -170,7 +171,7 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(call['argv'][:2], ['--model', 'pinned-kimi'])
         self.assertIn('"auto_update_models": false', call['argv'][-1])
 
-    def test_positional_goal_preserves_unicode_whitespace_and_shell_metacharacters(self):
+    def test_interactive_positional_goal_preserves_unicode_whitespace_and_shell_metacharacters(self):
         sentinel = self.base / 'unexpected-shell-output'
         goal = f'  목표: fix "quotes"; $(touch {sentinel}) `touch {sentinel}` $HOME\n🚀 second line  '
         result = self.terminal(goal)
@@ -602,7 +603,7 @@ class LauncherTest(unittest.TestCase):
         self.env['LAUNCH_TEST_PROBE_PID'] = str(pid_path)
         self.env['LAUNCH_TEST_PROBE_CLAUDE'] = 'wait_for_stop'
         child = subprocess.Popen(
-            [sys.executable, str(SCRIPT), '--driver', 'claude', '--project', str(self.project),
+            [sys.executable, str(SCRIPT), '--interactive', '--driver', 'claude', '--project', str(self.project),
              '--goal', 'Frozen goal', '--root', str(state_path.parent), '--offline-models'],
             cwd=self.base, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
@@ -677,10 +678,10 @@ class LauncherTest(unittest.TestCase):
                 self.assertIn('context-threshold', result.stderr)
         self.assertEqual(self.all_calls(), [])
 
-    def test_context_threshold_requires_managed_mode(self):
-        result = self.terminal('Goal', '--context-threshold', '.6')
+    def test_context_threshold_rejects_interactive_mode(self):
+        result = self.terminal('Goal', '--interactive', '--context-threshold', '.6')
         self.assertEqual(result.returncode, 2)
-        self.assertIn('--managed', result.stderr)
+        self.assertIn('managed mode', result.stderr)
         self.assertEqual(self.all_calls(), [])
 
     def test_managed_dispatch_preserves_frozen_root_and_manager_exit_status(self):
