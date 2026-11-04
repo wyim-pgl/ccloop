@@ -117,7 +117,13 @@ the `managed_turn_accepted` event.
 
 ## Context replacement
 
-The manager runs bounded work turns. It uses native current-thread context usage
+The manager runs checkpointed work turns. Each worker call selects one pending
+item from the first actionable section of `todo.md`, performs one bounded action,
+and records remaining substeps before returning. It asks at most one blocking
+question per call; the manager routes that question to the peer before continuing.
+This keeps calls focused and lets long goals span many saved turns.
+
+The manager uses native current-thread context usage
 when the client supplies it; the default threshold is **0.7** of the reported
 window. Cumulative billing tokens are not a current-context measurement. Clients
 without a reliable current-context signal use fresh sessions per bounded turn;

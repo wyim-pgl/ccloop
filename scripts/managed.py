@@ -166,7 +166,17 @@ def initialize(args, models, overrides):
 def work_prompt(state, bundle, binding):
     prompt = json.dumps({
         'instructions': 'Act as a bounded native worker for this existing authorized ccloop run. '
-            'Read all recovery file contents in context, including quarantine.md, whose entries must not be reused or retried without new evidence. Complete one coherent work step, '
+            'Read all recovery file contents in context, including quarantine.md, whose entries must not be reused or retried without new evidence. '
+            'Split the original goal across as many checkpointed turns as needed. In this call, '
+            'choose exactly one pending item from the first actionable section of todo.md and do '
+            'one bounded action toward it. Do not bundle later steps, unrelated fixes, broad '
+            'audits, or full test suites into this call. If that item needs multiple actions, do '
+            'only its first safe action, then record the remaining substeps in next_steps so the '
+            'manager can review and dispatch them in later turns. Keep checks targeted to this '
+            'action and leave time for the report. Ask at most one concrete blocking question in '
+            'this turn; if several uncertainties remain, ask the one that most blocks the next '
+            'safe action and record other questions in next_steps for later turns. '
+            'Complete that single bounded work step, '
             'then return only the JSON report matching report_schema. Preserve the original goal, '
             'criteria, authorization, and all budgets. Work only within normal native permissions. '
             'The manager owns the ledger, reviews, questions, and session rotation. Do not invoke '
