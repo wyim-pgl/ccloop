@@ -66,9 +66,8 @@ def manager_lock(root):
 
 
 def executable(driver):
-    candidate = os.environ.get('CCLOOP_' + driver.upper() + '_BIN', driver)
-    found = shutil.which(os.path.expanduser(candidate))
-    return str(Path(found).absolute()) if found else None
+    import runtime_paths
+    return runtime_paths.client(driver)[0]
 
 
 def runnable(state):
@@ -171,7 +170,8 @@ def work_prompt(state, bundle, binding):
             'then return only the JSON report matching report_schema. Preserve the original goal, '
             'criteria, authorization, and all budgets. Work only within normal native permissions. '
             'The manager owns the ledger, reviews, questions, and session rotation. Do not invoke '
-            'ccloop, start another manager, modify its private run files, or make a final completion '
+            'ccloop, OMK, legacy Kimi orchestration shims, or another manager; do not modify '
+            'private run files or make a final completion '
             'claim to the user. Do not leave background tools or commands running. For any ordinary '
             'technical or preference question, finish the step safely and return status=question '
             'with the question; the manager will consult the opposite provider. Permission or '

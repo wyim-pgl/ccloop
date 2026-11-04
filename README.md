@@ -17,6 +17,10 @@ ledger, original criteria, claim/issue continuity, artifact hashes and actual CL
 attempts. It is based on the durable controller from the previous desktop loop.
 The current CLI workflow needs no desktop UI or hourly scheduler.
 
+Kimi fallback uses the official **Kimi Code CLI**, not OMK: an isolated tool-free
+Code agent for consultation and ACP for managed work. Configuration comes from
+`~/.kimi-code/`; see [Code client setup](references/models.md#kimi-code-client).
+
 The original package format is retained: `SKILL.md`, `agents/`, `assets/`,
 `references/`, `scripts/` and `tests/`. Private supervisor runs keep `CONTROL.md`,
 `state.json`, numbered review/prompt/observation artifacts, and explicit stopping
@@ -43,6 +47,10 @@ Before a new worker starts, the manager loads their validated contents while
 preserving the original goal and review clock. Existing-root interactive launches
 also receive the recovery contents. See [context recovery](references/context.md)
 for the threshold, client capabilities and interrupted-work recovery.
+
+On HPC installations, per-user direct profiles can start Claude and Kimi Code
+in the existing container without a Slurm submission or forced permission flags.
+See [direct client profiles](references/context.md#direct-client-profiles).
 
 ```mermaid
 flowchart LR

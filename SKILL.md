@@ -12,6 +12,10 @@ turn until the original success criteria are established or a stopping condition
 is reached. A skill instruction alone does not schedule another turn.
 Kimi replaces an inaccessible participant. The other participant still supplies
 independent review; Kimi reviewing its own work is not cross-review.
+Use the official Kimi Code CLI for that participant. OMK and the archived Python
+CLI are not automatic substitutes; inspect `doctor` for client kind and config
+source. Read [Code client setup](references/models.md#kimi-code-client) if access
+or authentication needs repair.
 
 Accept `ccloop <goal>`, `$ccloop <goal>` in Codex, or `/ccloop <goal>` in Claude
 Code as an instruction to execute the goal continuously. Start from that goal;
@@ -23,8 +27,10 @@ choices. When a process skill would request approval of an ordinary design or
 next step, obtain peer advice and continue under that delegation. It does not
 delegate new account permissions, credentials or unrelated external actions.
 
-If `CCLOOP_REVIEWER` is set, answer only the supplied consultation: the calling
-driver owns the loop. If `CCLOOP_MANAGED_WORKER` is set, follow only the supplied
+If `CCLOOP_REVIEWER` is set or the caller identifies this as a consultation,
+answer only the supplied consultation: the calling driver owns the loop.
+If `CCLOOP_MANAGED_WORKER` is set or the caller identifies this as a bounded
+managed worker, follow only the supplied
 bounded worker task and response schema. The manager owns checkpoints, peer
 questions, reviews, continuation and context rotation; return your actual work
 and uncertainties to it. For an existing desktop ledger (`schema: 1` with a Claude
@@ -50,6 +56,8 @@ If the user supplies an existing root, first read its status/context and pass
 `--root` with its exact recorded goal, project and active driver. Prepare a custom
 configuration only when the supplied scope needs it, then launch in the same turn.
 Only explicit `--interactive` selects the host-driven protocol below.
+Kimi Code automation uses managed ACP. Its `--prompt` mode must not replace the
+work driver because that mode uses a different tool approval policy.
 
 ## Start from a goal
 
@@ -74,6 +82,10 @@ Only explicit `--interactive` selects the host-driven protocol below.
    helper and launcher through WSL, resolving both project and ledger paths inside
    WSL; use the installed `ccloop` wrapper's Python runtime when available. Run
    `doctor` there before dispatch. Do not run these scripts with Windows Python.
+   On a configured HPC host, use ccloop's direct-client profiles. Claude and Kimi
+   calls start their native client or container without sourcing shell functions
+   or submitting `sbatch`/`srun`. Actual analysis jobs retain the user's compute
+   scheduling requirements.
 4. Read [CLI protocol](references/cli-protocol.md). Normal dispatch lets the manager
    initialize its ledger automatically. For a custom frozen configuration, create
    a private supervisor

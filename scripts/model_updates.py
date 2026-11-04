@@ -201,15 +201,27 @@ def _local_codex(warnings):
         return None
 
 
+def _kimi_config_path():
+    import kimi_runtime
+    import runtime_paths
+    executable, candidate = runtime_paths.client('kimi')
+    if kimi_runtime.kind(executable or candidate) == 'python':
+        return Path.home() / '.kimi' / 'config.toml'
+    return kimi_runtime.code_home() / 'config.toml'
+
+
 def _local_kimi(warnings):
-    path = Path.home() / '.kimi' / 'config.toml'
+    path = _kimi_config_path()
     if not path.exists():
         return {}
     try:
         import tomllib
     except ImportError:
-        warnings.append('kimi: Python 3.11+ is needed to inspect configured aliases; retained known selection.')
-        return {}
+        try:
+            import tomli as tomllib
+        except ImportError:
+            warnings.append('kimi: Python 3.11+ or tomli is needed to inspect configured aliases; retained known selection.')
+            return {}
     try:
         data = tomllib.loads(path.read_text(encoding='utf-8'))
         aliases = {}
@@ -287,6 +299,7 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
         if provider in MODELS and isinstance(model, str) and MODEL_ID.fullmatch(model):
             models[provider] = model
     warnings = []
+    configured = _local_kimi(warnings)
     path = Path(cache_path or os.environ.get('CCLOOP_MODEL_CACHE') or
                 Path.home() / '.cache' / 'ccloop' / 'models.json').expanduser()
     cached = _read_cache(path, warnings)
@@ -296,7 +309,14 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
         for record in records:
             if isinstance(record, dict) and 'backend' in record:
                 backends[record.get('model')] = record['backend']
+    backends.update(configured)
     for provider, model in cached.get('models', {}).items():
+        if provider == 'kimi':
+            records = cached.get('sources', {}).get('kimi', [])
+            if model not in configured or not any(record.get('backend') == configured[model]
+                                                  for record in records):
+                warnings.append('kimi: cached alias is not verified in the selected client configuration; retained known profile.')
+                continue
         if _upgrade(provider, model, models[provider], backends):
             models[provider] = model
             sources[provider] = cached['sources'][provider]
@@ -309,8 +329,6 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
 
     documents, failures = _documents()
     warnings.extend(failures)
-    configured = _local_kimi(warnings)
-    backends.update(configured)
 
     def accept(provider, candidate, source, evidence, backend=None):
         if not candidate:
@@ -346,7 +364,7 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
                 else:
                     warnings.append('kimi: official frontier model has no configured alias; retained strongest known configured selection.')
                     selected = max(configured, key=lambda alias: _identity('kimi', alias, configured[alias])[1])
-                    accept('kimi', selected, '~/.kimi/config.toml',
+                    accept('kimi', selected, str(_kimi_config_path()),
                            'Newest configured K-series backend; official next model is not configured.',
                            configured[selected])
             elif candidate:

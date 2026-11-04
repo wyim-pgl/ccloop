@@ -11,7 +11,7 @@ access to a selected model.
 | --- | --- | --- | --- |
 | Claude Code | `claude-fable-5-1` | `max` | `modelUsage` keys in the CLI JSON result identify actual model usage. |
 | Codex | `gpt-6-astra` | `max` | Explicit model flag; current CLI JSON events do not always expose the returned model. |
-| Kimi | `kimi-code/k3` | thinking enabled | Local configured alias points to K3; print output may omit backend model metadata. |
+| Kimi Code | `kimi-code/k3` | maximum supported thinking | Official Code CLI; selected alias is separate from served-model observation, which may remain unknown. |
 
 `max` keeps Codex focused on the consultation; `ultra` enables automatic task
 delegation. The strongest Claude model can have different entitlement or credit
@@ -51,6 +51,32 @@ python3 /path/to/ccloop/scripts/ccloop.py --root /work/private-supervisor models
 Model metadata refresh does not upgrade CLI binaries, change global account
 settings or authorize paid-usage changes.
 
+## Kimi Code client
+
+Normal Kimi calls use the official **Kimi Code CLI**, with configuration under
+`~/.kimi-code/` (or `KIMI_CODE_HOME`). They do not route through OMK or implicitly
+substitute the archived Python CLI. `doctor` reports the selected client kind
+and config source. Run `kimi-code --version` for the installed Code alias.
+
+The reviewer uses an isolated Code home, a Markdown agent with no tools or
+subagents, and `--prompt`/`--output-format stream-json`. The full request is in
+the private agent context because Code prompt mode does not consume stdin.
+Managed work uses ACP and normal per-operation permissions, not prompt mode's
+automatic tool policy. Use `ccloop --driver kimi --goal 'The original goal'`;
+the Code driver requires managed mode (the default). Open the Code TUI directly
+for a separate interactive session.
+
+Original Code credentials are referenced locally; Python OAuth tokens are not
+copied or migrated by ccloop. If Code is not logged in, use `kimi-code login` on
+that computer. Model aliases and cached aliases are checked against the selected
+client's config. An old Python-only cache cannot select a missing Code alias.
+Python 3.11+ uses stdlib TOML parsing; Python 3.10 can use optional `tomli` without
+changing the Kimi Code client itself.
+
+Explicit legacy prefixes remain compatible for existing installations; they are
+never the normal automatic fallback. To select one intentionally, set the exact
+`CCLOOP_KIMI_BIN` and, if necessary, `CCLOOP_KIMI_FLAVOR=python`.
+
 ## Sources and CLI versions
 
 - [Codex models](https://developers.openai.com/codex/models/)
@@ -58,11 +84,11 @@ settings or authorize paid-usage changes.
 - [Codex configuration](https://developers.openai.com/codex/config-reference)
 - [Claude models, effort and modelUsage](https://code.claude.com/docs/en/model-config)
 - [Claude headless execution](https://code.claude.com/docs/en/headless)
-- [Kimi CLI options](https://moonshotai.github.io/kimi-cli/en/reference/kimi-command.html)
-- [Kimi custom agents](https://moonshotai.github.io/kimi-cli/en/customization/agents.html)
-- [Kimi print mode](https://moonshotai.github.io/kimi-cli/en/customization/print-mode.html)
+- [Kimi Code command](https://moonshotai.github.io/kimi-code/en/reference/kimi-command.html)
+- [Kimi Code custom agents](https://moonshotai.github.io/kimi-code/en/customization/agents.html)
+- [Kimi Code ACP](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp.html)
 - [Kimi K3 configuration](https://moonshotai.github.io/kimi-code/en/configuration/config-files.html)
 
-Local versions checked: Claude Code 2.1.305, Codex 0.163.0, Kimi CLI 1.49.0.
-These commands intentionally target the installed Python Kimi CLI; newer Kimi
-implementations may use different effort/configuration flags.
+Kimi Code CLI 2.4.1 is the verified modern interface. Legacy Python Kimi CLI
+1.49 uses different flags and Wire transport, retained only for explicit
+compatibility. Other versions may require capability verification.

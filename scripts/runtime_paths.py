@@ -5,6 +5,35 @@ import re
 import shutil
 
 
+def client(provider):
+    """Resolve the actual client, preferring Code and scheduler-free loop profiles."""
+    override = os.environ.get('CCLOOP_' + provider.upper() + '_BIN')
+    if override is not None:
+        candidate = override
+    elif provider == 'claude':
+        direct = Path.home() / '.local/share/ccloop/launchers/claude-direct'
+        candidate = str(direct) if direct.is_file() and os.access(direct, os.X_OK) else provider
+    elif provider == 'kimi':
+        import kimi_runtime
+        home = Path.home()
+        candidates = [home / '.local/share/ccloop/launchers/kimi-code-direct',
+                      home / '.local/bin/kimi-code',
+                      home / '.local/share/ccloop/clients/kimi-code/node_modules/.bin/kimi',
+                      home / '.kimi-code/bin/kimi']
+        for name in ('kimi-code', 'kimi'):
+            found = shutil.which(name)
+            if found and kimi_runtime.kind(found) == 'code':
+                candidates.append(Path(found))
+        for path in candidates:
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path.absolute()), str(path)
+        return None, 'kimi-code'
+    else:
+        candidate = provider
+    found = shutil.which(os.path.expanduser(candidate))
+    return (str(Path(found).absolute()) if found else None), candidate
+
+
 def configure():
     """Extend this process's PATH only; retain existing choices and explicit overrides."""
     home = Path.home()
@@ -19,8 +48,7 @@ def configure():
         'codex': [home / '.local/bin', nvm / 'current/bin',
                   *(path / 'bin' for path in versions), home / '.npm-global/bin'],
         'claude': [home / '.local/bin', home / '.npm-global/bin'],
-        'kimi': [home / '.local/kimi-shim', home / '.local/bin',
-                 home / '.local/share/uv/tools/kimi-cli/bin'],
+        'kimi': [home / '.local/bin', home / '.kimi-code/bin'],
     }
     paths = os.environ.get('PATH', '').split(os.pathsep)
     for provider, directories in candidates.items():

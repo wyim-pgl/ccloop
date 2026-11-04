@@ -54,11 +54,57 @@ class RuntimePathTests(unittest.TestCase):
         self.assertTrue(plan['available'], plan['reason'])
         self.assertEqual(plan['driver'], 'codex')
 
-    def test_missing_primary_finds_configured_kimi_shim_in_fresh_shell(self):
+    def test_legacy_python_shim_is_not_an_implicit_code_fallback(self):
         self.executable('.local/kimi-shim/kimi')
+        plan = self.plan()
+        self.assertFalse(plan['available'])
+        self.assertEqual(plan['driver'], 'kimi')
+
+    def test_missing_primary_finds_official_code_client(self):
+        self.executable('.kimi-code/bin/kimi')
         plan = self.plan()
         self.assertTrue(plan['available'], plan['reason'])
         self.assertEqual(plan['driver'], 'kimi')
+
+    def test_code_config_relocation_does_not_hide_the_native_install(self):
+        self.executable('.kimi-code/bin/kimi')
+        self.env['KIMI_CODE_HOME'] = str(self.home / 'other-code-config')
+        plan = self.plan()
+        self.assertTrue(plan['available'], plan['reason'])
+        self.assertEqual(plan['driver'], 'kimi')
+
+    def test_code_interactive_request_does_not_start_auto_prompt_mode(self):
+        client = self.executable('.kimi-code/bin/kimi')
+        marker = self.home / 'unexpected-client-call'
+        client.write_text('#!/bin/sh\nprintf invoked > ' + str(marker) + '\nexit 0\n')
+        result = subprocess.run([sys.executable, str(SCRIPTS / 'launch.py'),
+            'Goal', '--driver', 'kimi', '--interactive', '--offline-models'],
+            env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('managed', result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_code_client_takes_priority_over_python_cli_on_path(self):
+        self.executable('base-bin/kimi')
+        chosen = self.executable('.kimi-code/bin/kimi')
+        source = ('import sys;sys.path.insert(0,sys.argv[1]);import runtime_paths;'
+                  'runtime_paths.configure();print(runtime_paths.client("kimi")[0])')
+        result = subprocess.run([sys.executable, '-c', source, str(SCRIPTS)],
+            env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(chosen))
+
+    def test_ccloop_direct_claude_profile_bypasses_path_scheduler_wrapper(self):
+        self.executable('base-bin/claude')
+        chosen = self.executable('.local/share/ccloop/launchers/claude-direct')
+        source = ('import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);'
+                  'import runtime_paths,providers;runtime_paths.configure();'
+                  'print(json.dumps({"client":runtime_paths.client("claude")[0],'
+                  '"reviewer":providers.command("claude",{"models":providers.MODELS},Path.cwd())[0]}))')
+        result = subprocess.run([sys.executable, '-c', source, str(SCRIPTS)],
+            env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'client': str(chosen), 'reviewer': str(chosen)})
 
     def test_existing_path_selection_is_preserved(self):
         chosen = self.executable('base-bin/codex')

@@ -36,9 +36,7 @@ READINESS_PROMPT = (
 
 def executable(driver):
     """Resolve one executable path, never a shell command or argument string."""
-    candidate = os.environ.get('CCLOOP_' + driver.upper() + '_BIN', driver)
-    found = shutil.which(os.path.expanduser(candidate))
-    return str(Path(found).absolute()) if found else None, candidate
+    return runtime_paths.client(driver)
 
 
 def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=True, recovery=None):
@@ -110,6 +108,10 @@ def prompt_for(driver, goal, models, root, fallback=False, auto_update_models=Tr
 
 
 def command_for(driver, command, goal, models, root, fallback=False, auto_update_models=True, recovery=None):
+    if driver == 'kimi':
+        import kimi_runtime
+        if kimi_runtime.kind(command) == 'code':
+            raise ValueError('Kimi Code goal execution requires managed mode (default); remove --interactive')
     prompt = prompt_for(driver, goal, models, root, fallback, auto_update_models, recovery)
     if driver == 'claude':
         return [command, '--model', models[driver], '--effort', 'max', prompt]
@@ -149,8 +151,9 @@ def launch_plan(args, models, root, recovery=None):
     plan = {
         'requested_driver': args.driver,
         'driver': driver,
-        'argv': command_for(driver, command or candidate, args.goal, models, root, fallback,
-                            not any(getattr(args, name + '_model') is not None for name in MODELS), recovery),
+        'argv': [] if getattr(args, 'managed', False) else command_for(
+            driver, command or candidate, args.goal, models, root, fallback,
+            not any(getattr(args, name + '_model') is not None for name in MODELS), recovery),
         'project': str(args.project),
         'root': root,
         'models': models,

@@ -8,12 +8,14 @@ import signal
 import subprocess
 import tempfile
 import time
+import kimi_runtime
 import runtime_paths
 
 
 MODELS = {'claude': 'claude-fable-5-1', 'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'}
 FENCE = re.compile(r'```(?:json)?\s*\n(.*?)\n```', re.DOTALL)
 ACCESS = re.compile(
+    r'\bauth\.(?:login_required|provisioning_required|token_missing|token_unauthorized|model_not_resolved)\b|'
     r'authentication|unauthenticated|unauthorized|not logged in|login required|'
     r'log in required|invalid api.?key|invalid.?token|expired.{0,25}token|'
     r'token.{0,25}expired|permission denied|access denied|does not have access|may not have access|'
@@ -60,12 +62,27 @@ def kimi_preflight():
         raise ProviderError('Kimi has configured hooks; zero-tool consultation is unavailable', 'unsafe')
 
 
+def client_command(provider, config):
+    configured = config.get('commands', {}).get(provider)
+    if not configured or configured == [provider]:
+        executable, candidate = runtime_paths.client(provider)
+        return [candidate], executable
+    prefix = list(configured)
+    return prefix, shutil.which(os.path.expanduser(prefix[0]))
+
+
 def command(provider, config, temporary):
-    prefix = list(config.get('commands', {}).get(provider,
-        [os.environ.get('CCLOOP_' + provider.upper() + '_BIN', provider)]))
-    executable = shutil.which(os.path.expanduser(prefix[0]))
+    prefix, executable = client_command(provider, config)
     if not executable:
         raise ProviderError(f'{provider}: executable not found: {prefix[0]}', 'access')
+    if provider == 'kimi' and kimi_runtime.kind(executable) == 'code':
+        # Retain explicit Code aliases through launch; resolving a symlink to a
+        # generically named wrapper would discard its flavor declaration.
+        prefix[0] = str(Path(executable).absolute())
+        try:
+            return kimi_runtime.reviewer_command(prefix, config, temporary)
+        except ValueError as error:
+            raise ProviderError(str(error), 'unsafe') from None
     prefix[0] = str(Path(executable).resolve())
     model = config['models'][provider]
     if provider == 'claude':
@@ -99,6 +116,67 @@ def strip_fence(text):
     return match.group(1) if match else text
 
 
+def kimi_public_output(stdout):
+    """Retain external answer/error fields, never raw Code reasoning or traces."""
+    public = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except ValueError:
+            public.append({'type': 'ccloop.invalid_event'})
+            continue
+        if not isinstance(item, dict):
+            public.append({'type': 'ccloop.invalid_event'})
+            continue
+        if item.get('type') in {'error', 'turn.failed'}:
+            error = item.get('error') if isinstance(item.get('error'), dict) else item
+            message = error.get('message', 'Kimi Code request failed')
+            event = {'type': 'error', 'message': message if isinstance(message, str) else 'Kimi Code request failed'}
+            for key in ('code', 'status_code'):
+                value = error.get(key)
+                if isinstance(value, int) or isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]+', value):
+                    event[key] = value
+            public.append(event)
+            continue
+        message = item.get('message', item)
+        if not isinstance(message, dict):
+            continue
+        if message.get('tool_calls') or message.get('role') == 'tool':
+            public.append({'type': 'ccloop.tool_event'})
+            continue
+        if message.get('role') == 'assistant':
+            content = message.get('content')
+            if isinstance(content, list):
+                content = ''.join(block['text'] for block in content if isinstance(block, dict)
+                                  and block.get('type') == 'text' and isinstance(block.get('text'), str))
+            if isinstance(content, str) and content:
+                event = {'role': 'assistant', 'content': content}
+                model = message.get('model', item.get('model'))
+                if isinstance(model, str):
+                    event['model'] = model
+                public.append(event)
+    return ''.join(json.dumps(item, ensure_ascii=False) + '\n' for item in public)
+
+
+def kimi_public_error(stderr):
+    """Prompt JSON mode has no reasoning on stderr; retain diagnostics only."""
+    clean = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', stderr)
+    public = []
+    message_pending = False
+    for line in clean.splitlines():
+        if message_pending and line.strip():
+            public.append(line[:2000])
+            message_pending = False
+        elif line == 'message:' and public:
+            # Official startup errors use "error: <title>\n\nmessage:\n<text>".
+            message_pending = True
+        elif re.match(r'^(?:Error|Fatal|[A-Za-z][A-Za-z0-9]*Error):|^HTTP\s+[45]\d\d\b|^[45]\d\d\s', line, re.IGNORECASE):
+            public.append(line[:2000])
+    return '\n'.join(public)
+
+
 def parse_response(provider, stdout, attempt):
     if provider == 'claude':
         value = json.loads(stdout)
@@ -118,7 +196,13 @@ def parse_response(provider, stdout, attempt):
             item = json.loads(line)
             if not isinstance(item, dict):
                 raise ProviderError('Streaming response contains a non-object event')
-            if isinstance(item.get('model'), str):
+            if item.get('type') == 'ccloop.invalid_event':
+                raise ProviderError('Kimi Code returned an invalid stream event')
+            if item.get('type') == 'ccloop.tool_event':
+                raise ProviderError('Kimi Code reviewer attempted a tool call', 'unsafe')
+            # Code's PromptJsonWriter has no served-model attestation. A wrapper
+            # adding its configured model must not turn that request into proof.
+            if isinstance(item.get('model'), str) and not (provider == 'kimi' and attempt.get('cli_kind') == 'code'):
                 attempt['observed_models'].append(item['model'])
             if item.get('type') in {'error', 'turn.failed'}:
                 message = json.dumps(item, ensure_ascii=False)
@@ -181,21 +265,29 @@ def invoke(provider, config, prompt, directory, timeout, cancelled, started):
         with tempfile.TemporaryDirectory(prefix='ccloop-review-') as name:
             temporary = Path(name)
             (temporary / 'work').mkdir()
+            prompt_path = temporary / 'stdin.json'
+            prompt_path.write_text(prompt, encoding='utf-8')
             argv = command(provider, config, temporary)
             attempt['argv'] = argv
+            code_client = provider == 'kimi' and kimi_runtime.kind(argv[0]) == 'code'
+            if provider == 'kimi':
+                attempt['cli_kind'] = 'code' if code_client else 'python'
+                attempt['config_source'] = str((kimi_runtime.code_home() if code_client else Path.home() / '.kimi') / 'config.toml')
             # A timed-out communicate(input=...) may leave a large stdin pipe
             # partially written. Retrying with input=None does not re-register
             # stdin for writes, so the child can wait forever for the remainder.
             # A private, rewound file provides the complete UTF-8 input and EOF
             # independently of CLI startup speed, while polling stays cancellable.
-            prompt_path = temporary / 'stdin.json'
-            prompt_path.write_text(prompt, encoding='utf-8')
-            with prompt_path.open('r', encoding='utf-8') as source, open(attempt['stdout_path'], 'w', encoding='utf-8') as out, open(attempt['stderr_path'], 'w', encoding='utf-8') as err:
+            stdout_path = temporary / 'stdout.raw' if code_client else Path(attempt['stdout_path'])
+            stderr_path = temporary / 'stderr.raw' if code_client else Path(attempt['stderr_path'])
+            with prompt_path.open('r', encoding='utf-8') as source, stdout_path.open('w', encoding='utf-8') as out, stderr_path.open('w', encoding='utf-8') as err:
                 if cancelled():
                     raise ProviderError('Consultation ownership was revoked before launch', 'cancelled')
                 environment = dict(os.environ, CCLOOP_CONSULTANT='1', CCLOOP_REVIEWER='1')
                 environment.pop('CLAUDECODE', None)
                 environment = runtime_paths.client_env(argv[0], environment)
+                if code_client:
+                    environment = kimi_runtime.reviewer_env(argv[0], temporary, environment)
                 process = subprocess.Popen(argv, stdin=source, stdout=out, stderr=err,
                     text=True, cwd=temporary / 'work', start_new_session=True,
                     env=environment)
@@ -217,8 +309,13 @@ def invoke(provider, config, prompt, directory, timeout, cancelled, started):
                 attempt['returncode'] = process.returncode
                 out.flush()
                 err.flush()
-            stdout = Path(attempt['stdout_path']).read_text(encoding='utf-8')
-            stderr = Path(attempt['stderr_path']).read_text(encoding='utf-8')
+            stdout = stdout_path.read_text(encoding='utf-8')
+            stderr = stderr_path.read_text(encoding='utf-8')
+            if code_client:
+                stdout = kimi_public_output(stdout)
+                stderr = kimi_public_error(stderr)
+                Path(attempt['stdout_path']).write_text(stdout, encoding='utf-8')
+                Path(attempt['stderr_path']).write_text(stderr, encoding='utf-8')
             if process.returncode:
                 # Native error events on stdout take precedence over incidental stderr warnings.
                 # A report from a failing process is never accepted or treated as an access diagnostic.
@@ -261,14 +358,17 @@ def doctor(config=None):
     config = config or {}
     result = {'python': os.sys.version.split()[0], 'authentication_checked': False, 'providers': {}}
     for provider in MODELS:
-        executable = config.get('commands', {}).get(provider,
-            [os.environ.get('CCLOOP_' + provider.upper() + '_BIN', provider)])[0]
-        item = {'executable': shutil.which(os.path.expanduser(executable)),
+        prefix, executable = client_command(provider, config)
+        item = {'executable': executable,
                 'requested_model': config.get('models', MODELS).get(provider, MODELS[provider])}
         if provider == 'kimi':
             try:
-                kimi_preflight()
-            except ProviderError as error:
+                item['cli_kind'] = kimi_runtime.kind(executable or prefix[0])
+                item['config_source'] = str((kimi_runtime.code_home() if item['cli_kind'] == 'code'
+                                            else Path.home() / '.kimi') / 'config.toml')
+                if item['cli_kind'] == 'python':
+                    kimi_preflight()
+            except ValueError as error:
                 item['preflight_error'] = str(error)
         result['providers'][provider] = item
     return result

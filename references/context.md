@@ -21,6 +21,25 @@ are modified. NVM clients use their paired Node inside their own subprocess,
 so an older system Node does not break startup or change other applications.
 Windows clients use the WSL runtime and WSL paths.
 
+## Direct client profiles
+
+`~/.local/share/ccloop/launchers/claude-direct` and `kimi-code-direct` are optional
+per-user client launchers. When configured, ccloop selects them directly instead
+of a shell alias or Slurm-wrapped function. Explicit `CCLOOP_*_BIN` settings and
+frozen custom command prefixes retain their authority.
+
+`scripts/direct_container.py --profile FILE -- CLIENT_ARGS...` supports an
+existing Singularity image. Its private JSON profile contains `singularity`,
+`image`, `executable`, `binds`, and non-credential transport `environment`
+settings. It executes Singularity directly, binds the current directory and
+private Code home, forwards role markers, and adds no scheduler, shell evaluation
+or forced approval flags. Credentials stay in the existing user stores and
+inherited environment, outside command-line fields.
+
+This changes how the model client starts. Analysis jobs still follow the user's
+compute scheduling requirements. Do not edit or bypass existing Slurm jobs to
+apply a client transport update.
+
 ## The recovery files
 
 | File | Content |

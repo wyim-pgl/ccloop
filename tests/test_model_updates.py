@@ -48,8 +48,8 @@ class ModelUpdatesTest(unittest.TestCase):
                 return self.docs[provider]
         self.fail('Unexpected metadata URL')
 
-    def write_kimi(self, aliases):
-        path = self.home / '.kimi' / 'config.toml'
+    def write_kimi(self, aliases, directory='.kimi-code'):
+        path = self.home / directory / 'config.toml'
         path.parent.mkdir(exist_ok=True)
         content = 'default_model = "kimi-code/k3"\n[providers.kimi]\n'
         content += 'type = "kimi"\napi_key = "secret-must-never-appear"\n'
@@ -107,13 +107,39 @@ class ModelUpdatesTest(unittest.TestCase):
         current = dict(self.module.MODELS, kimi='kimi-code/k4')
         self.docs['kimi'] = 'default_model = "kimi-code/k5"'
         self.write_kimi({'kimi-code/k5': 'k5'})
-        with mock.patch.dict(sys.modules, {'tomllib': None}):
+        with mock.patch.dict(sys.modules, {'tomllib': None, 'tomli': None}):
             result = self.module.resolve_models(current)
         self.assertEqual(result['models'], current)
         self.assertEqual(result['sources']['kimi'], [])
         self.assertTrue(any('Python 3.11+' in warning and 'retained' in warning
                             for warning in result['warnings']))
         self.assertNotIn('secret-must-never-appear', json.dumps(result))
+
+    @unittest.skipUnless(HAS_TOMLLIB, TOMLLIB_REQUIREMENT)
+    def test_code_aliases_are_not_taken_from_the_old_python_config(self):
+        self.docs['kimi'] = 'default_model = "kimi-code/k4"'
+        self.write_kimi({'code-k4': 'k4'})
+        self.write_kimi({'legacy-k5': 'k5'}, directory='.kimi')
+        result = self.module.resolve_models()
+        self.assertEqual(result['models']['kimi'], 'code-k4')
+
+    @unittest.skipUnless(HAS_TOMLLIB, TOMLLIB_REQUIREMENT)
+    def test_old_cache_alias_is_not_reused_against_code_configuration(self):
+        self.write_kimi({'legacy-k5': 'k5'})
+        self.docs['kimi'] = 'default_model = "kimi-code/k5"'
+        before = self.module.resolve_models()
+        self.assertEqual(before['models']['kimi'], 'legacy-k5')
+        self.write_kimi({'kimi-code/k3': 'k3'})
+        result = self.module.resolve_models(offline=True)
+        self.assertEqual(result['models']['kimi'], 'kimi-code/k3')
+
+    @unittest.skipUnless(HAS_TOMLLIB, TOMLLIB_REQUIREMENT)
+    def test_relocated_code_home_is_the_alias_source(self):
+        self.docs['kimi'] = 'default_model = "kimi-code/k4"'
+        self.write_kimi({'relocated-k4': 'k4'}, directory='custom-code')
+        with mock.patch.dict(os.environ, {'KIMI_CODE_HOME': str(self.home / 'custom-code')}):
+            result = self.module.resolve_models()
+        self.assertEqual(result['models']['kimi'], 'relocated-k4')
 
     def test_offline_environment_never_fetches_metadata(self):
         with mock.patch.dict(os.environ, {'CCLOOP_MODEL_METADATA_OFFLINE': '1'}):
@@ -218,7 +244,7 @@ class ModelUpdatesTest(unittest.TestCase):
     def test_corrupt_cache_and_invalid_kimi_config_do_not_expose_contents(self):
         self.cache.parent.mkdir()
         self.cache.write_text('{secret-must-never-appear')
-        (self.home / '.kimi/config.toml').write_text('secret-must-never-appear= [')
+        (self.home / '.kimi-code/config.toml').write_text('secret-must-never-appear= [')
         result = self.module.resolve_models()
         self.assertNotIn('secret-must-never-appear', json.dumps(result))
         self.assertEqual(result['models']['kimi'], self.module.MODELS['kimi'])

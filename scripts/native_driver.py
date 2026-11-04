@@ -1,7 +1,7 @@
 """Native work adapters, separate from the isolated, tool-free reviewers.
 
 Codex protocol fields follow the CLI's generated app-server JSON schemas.
-Kimi uses Wire instead of print mode, which implicitly auto-approves tools.
+Kimi Code uses ACP; the legacy Python client retains its Wire transport.
 The supervisor owns native children and persists a result before exiting.
 """
 import json
@@ -19,6 +19,7 @@ import control
 import checkpoints
 import providers
 import runtime_paths
+import kimi_runtime
 
 
 MAX_RESULT = 2_000_000
@@ -27,6 +28,7 @@ MAX_RESULT = 2_000_000
 def private_reasoning(value):
     return (isinstance(value, dict) and ((isinstance(value.get('type'), str)
             and value['type'] in {'reasoning', 'thinking', 'redacted_thinking', 'think'})
+            or value.get('sessionUpdate') == 'agent_thought_chunk'
             or str(value.get('method', '')).startswith('item/reasoning/')))
 
 
@@ -45,6 +47,27 @@ class DriverError(ValueError):
     def __init__(self, message, kind='invalid'):
         super().__init__(message)
         self.kind = kind
+
+
+def acp_object(value, field):
+    if not isinstance(value, dict):
+        raise DriverError('Invalid Kimi ACP ' + field + ': expected an object')
+    return value
+
+
+def acp_error_kind(value):
+    """Use ACP error codes, never incidental numbers in messages or data."""
+    error = acp_object(value, 'error')
+    code = error.get('code')
+    if type(code) is not int or not isinstance(error.get('message'), str):
+        raise DriverError('Invalid Kimi ACP error: expected an integer code and text message')
+    if code == -32000:
+        return 'access'  # ACP authRequired
+    if code == -32800:
+        return 'cancelled'
+    if code == -32700 or -32699 <= code <= -32600:
+        return 'provider' if code == -32603 else 'invalid'
+    return 'provider'
 
 
 def private_json(path, maximum=MAX_RESULT):
@@ -78,6 +101,10 @@ class Native:
         self.error = None
         self.err = None
         self.log = None
+        self.acp = False
+        self.acp_config = []
+        self.acp_model_selected = False
+        self.acp_approval_ids = set()
 
     def check(self):
         try:
@@ -104,6 +131,9 @@ class Native:
             raise DriverError('Artifacts changed before native worker dispatch', 'uncertain_work')
         environment = dict(os.environ, CCLOOP_MANAGED_WORKER='1')
         environment.pop('CLAUDECODE', None)
+        if self.acp:
+            # Resolve relative roots before Popen changes cwd to the project.
+            environment['KIMI_CODE_HOME'] = str(kimi_runtime.code_home())
         environment = runtime_paths.client_env(argv[0], environment)
         self.err = open(self.directory / 'stderr.txt', 'wb')
         self.log = open(self.directory / 'stdout.jsonl', 'wb')
@@ -177,14 +207,22 @@ class Native:
             self.receive()
         value = self.responses.pop(request)
         if 'error' in value:
-            error = json.dumps(value['error'], ensure_ascii=False)
-            raise DriverError(error, 'access' if providers.ACCESS.search(error) else 'provider')
+            error = json.dumps(public_audit(value['error']), ensure_ascii=False)
+            kind = (acp_error_kind(value['error']) if self.acp else
+                    'access' if providers.ACCESS.search(error) else 'provider')
+            raise DriverError(error, kind)
+        if self.acp:
+            return acp_object(value.get('result'), 'response result')
         return value.get('result', {})
 
     def approval(self, value):
         """Only a person's explicit per-operation answer can approve a native request."""
         method = value['method']
         p = value.get('params', {})
+        if self.acp:
+            if method != 'session/request_permission':
+                raise DriverError('Unsupported Kimi ACP request: ' + str(method), 'permission')
+            return self.acp_approval(value)
         codex = method in {'item/commandExecution/requestApproval', 'item/fileChange/requestApproval'}
         kimi = method == 'request' and p.get('type') == 'ApprovalRequest'
         if not (codex or kimi):
@@ -206,7 +244,114 @@ class Native:
                   {'request_id': p['payload']['id'], 'response': 'approve'})
         self.send({'jsonrpc': '2.0', 'id': value['id'], 'result': result})
 
+    def acp_approval(self, value):
+        """Translate an explicit per-operation manager answer to an ACP option."""
+        params = acp_object(value.get('params'), 'permission parameters')
+        cancelled = {'jsonrpc': '2.0', 'id': value['id'],
+                     'result': {'outcome': {'outcome': 'cancelled'}}}
+        if params.get('sessionId') != self.details['session_id']:
+            self.acp_shutdown_send(cancelled)
+            raise DriverError('ACP permission request belongs to a different session', 'permission')
+        if value['id'] in self.acp_approval_ids:
+            self.acp_shutdown_send(cancelled)
+            raise DriverError('ACP reused a permission request ID; a previous answer cannot approve new work', 'permission')
+        self.acp_approval_ids.add(value['id'])
+        control.atomic_json(self.directory / 'approval.json', {
+            'id': value['id'], 'native': public_audit(value), 'binding': self.job['binding']})
+        answer_path = self.directory / 'approval-answer.json'
+        try:
+            while True:
+                self.check()
+                if answer_path.exists():
+                    answer = private_json(answer_path)
+                    if answer.get('id') == value['id']:
+                        break
+                time.sleep(.1)
+        except DriverError:
+            # send() checks the owner and ledger, which already prohibit work.
+            # A cancellation reply is cleanup only, and must still reach ACP.
+            self.acp_shutdown_send(cancelled)
+            raise
+        approved = answer.get('approve') is True
+        option_kind = 'allow_once' if approved else 'reject_once'
+        options = [option for option in params.get('options', [])
+                   if isinstance(option, dict) and option.get('kind') == option_kind
+                   and isinstance(option.get('optionId'), str)]
+        # An ordinary yes is not permission to select among several actions,
+        # nor to install a persistent allow rule. Fail closed in either case.
+        selected = options[0] if len(options) == 1 else None
+        reply = ({'jsonrpc': '2.0', 'id': value['id'], 'result': {
+            'outcome': {'outcome': 'selected', 'optionId': selected['optionId']}}}
+            if selected else cancelled)
+        try:
+            self.send(reply)
+        except DriverError:
+            self.acp_shutdown_send(cancelled)
+            raise
+        if not approved or selected is None:
+            raise DriverError('Native operation requires human permission; no approval was given', 'permission')
+
+    def acp_shutdown_send(self, value):
+        """Best-effort bounded cleanup after owner/ledger cancellation."""
+        if not self.process or not self.process.stdin or self.process.stdin.closed:
+            return
+        data = memoryview((json.dumps(value) + '\n').encode())
+        end = time.monotonic() + .2
+        while data and time.monotonic() < end:
+            try:
+                sent = os.write(self.process.stdin.fileno(), data)
+                data = data[sent:]
+            except BlockingIOError:
+                select.select([], [self.process.stdin.fileno()], [], .02)
+            except OSError:
+                break
+
+    def acp_configuration(self, options):
+        if options is None:
+            return
+        if not isinstance(options, list) or any(not isinstance(option, dict) for option in options):
+            raise DriverError('Invalid Kimi ACP configOptions: expected a list of objects')
+        self.acp_config = options
+        model = next((option.get('currentValue') for option in self.acp_config
+                      if option.get('id') == 'model'), None)
+        if model is not None and not isinstance(model, str):
+            raise DriverError('Invalid Kimi ACP model selection: expected text')
+        # ACP configuration is a selected alias, not proof of a served model.
+        self.details['selected_model'] = model
+        if self.acp_model_selected and model and model != self.job['model']:
+            raise DriverError('ACP selected a different model: ' + str(model), 'access')
+
+    def acp_event(self, value):
+        if value.get('method') != 'session/update':
+            return
+        params = acp_object(value.get('params'), 'session/update parameters')
+        if not isinstance(params.get('sessionId'), str):
+            raise DriverError('Invalid Kimi ACP update sessionId: expected text')
+        if params['sessionId'] != self.details['session_id']:
+            return
+        update = acp_object(params.get('update'), 'session update')
+        kind = update.get('sessionUpdate')
+        if not isinstance(kind, str):
+            raise DriverError('Invalid Kimi ACP sessionUpdate: expected text')
+        if kind == 'agent_message_chunk':
+            content = acp_object(update.get('content'), 'message content')
+            if content.get('type') == 'text':
+                if not isinstance(content.get('text'), str):
+                    raise DriverError('Invalid Kimi ACP message text: expected text')
+                self.details['text'] = self.details.get('text', '') + content['text']
+        elif kind in {'tool_call', 'tool_call_update'}:
+            self.events.append(public_audit(update))
+            # ACP has no Wire StepBegin. A report must follow the last
+            # tool event; earlier assistant narration remains in the audit.
+            self.details['text'] = ''
+        elif kind == 'config_option_update':
+            if not isinstance(update.get('configOptions'), list):
+                raise DriverError('Invalid Kimi ACP config option update: expected a list')
+            self.acp_configuration(update['configOptions'])
+
     def event(self, value):
+        if self.acp:
+            return self.acp_event(value)
         if self.job['driver'] == 'claude':
             if value.get('type') == 'result':
                 self.details['claude_result'] = value
@@ -273,6 +418,8 @@ class Native:
         return json.loads(self.details.get('text', ''))
 
     def kimi(self):
+        if kimi_runtime.kind(self.job['executable']) == 'code':
+            return self.kimi_code()
         self.start([self.job['executable'], '--wire', '--model', self.job['model'], '--thinking',
                     '--work-dir', self.job['project'], '--max-steps-per-turn', '50',
                     '--max-ralph-iterations', '0'])
@@ -284,6 +431,52 @@ class Native:
         if result.get('status') != 'finished':
             raise DriverError('Kimi turn did not finish: ' + str(result.get('status')), 'uncertain_work')
         return json.loads(self.details.get('text', ''))
+
+    def kimi_code(self):
+        self.acp = True
+        self.details.update(cli_kind='code', config_source=str(kimi_runtime.code_home() / 'config.toml'))
+        self.start([self.job['executable'], 'acp'])
+        initialized = self.response(self.request('initialize', {
+            'protocolVersion': 1, 'clientInfo': {'name': 'ccloop', 'version': '1'},
+            'clientCapabilities': {}}))
+        if initialized.get('protocolVersion') != 1:
+            raise DriverError('Kimi ACP did not negotiate protocol version 1', 'provider')
+        session = self.response(self.request('session/new', {'cwd': self.job['project'], 'mcpServers': []}))
+        session_id = session.get('sessionId')
+        if not isinstance(session_id, str) or not session_id:
+            raise DriverError('Kimi ACP did not return a session ID', 'provider')
+        self.details['session_id'] = session_id
+        self.acp_configuration(session.get('configOptions'))
+        self.response(self.request('session/set_model', {'sessionId': session_id, 'modelId': self.job['model']}))
+        self.acp_model_selected = True
+        self.acp_configuration(self.acp_config)
+        # Code's default mode maps to manual permissions. Never inherit an
+        # auto/yolo mode even when the optional picker metadata is absent.
+        self.response(self.request('session/set_mode', {'sessionId': session_id, 'modeId': 'default'}))
+        thinking = next((option for option in self.acp_config if option.get('id') == 'thinking'
+                         and option.get('type') == 'select'), None)
+        if thinking:
+            values = []
+            for option in thinking.get('options', []):
+                if isinstance(option, dict):
+                    values.extend(child.get('value') for child in option.get('options', [option])
+                                  if isinstance(child, dict))
+            effort = next((level for level in ('max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'on')
+                           if level in values), None)
+            if effort:
+                configured = self.response(self.request('session/set_config_option', {
+                    'sessionId': session_id, 'configId': thinking['id'], 'value': effort}))
+                self.acp_configuration(configured.get('configOptions'))
+                self.details['requested_thinking'] = effort
+        self.details['work_started'] = True
+        self.end = time.monotonic() + self.job['timeout_seconds']
+        result = self.response(self.request('session/prompt', {
+            'sessionId': session_id, 'prompt': [{'type': 'text', 'text': self.job['prompt']}]}))
+        stop = result.get('stopReason')
+        if stop != 'end_turn':
+            raise DriverError('Kimi ACP turn did not finish: ' + str(stop),
+                              'cancelled' if stop == 'cancelled' else 'uncertain_work')
+        return json.loads(providers.strip_fence(self.details.get('text', '')))
 
     def claude(self):
         self.start([self.job['executable'], '--print', '--input-format', 'text',
@@ -310,6 +503,9 @@ class Native:
 
     def close(self, completed=False):
         if self.process:
+            if self.acp and not completed and self.details['session_id']:
+                self.acp_shutdown_send({'jsonrpc': '2.0', 'method': 'session/cancel',
+                                        'params': {'sessionId': self.details['session_id']}})
             # EOF is the normal RPC-server shutdown. Never accept a server that
             # exits unsuccessfully after emitting a purported completed turn.
             if self.process.stdin and not self.process.stdin.closed:
