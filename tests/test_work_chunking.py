@@ -21,6 +21,7 @@ class WorkChunkingTests(unittest.TestCase):
              'generation': 1, 'artifact_sha256': 'sha'}))
         instructions = prompt['instructions'].lower()
         self.assertIn('exactly one pending item', instructions)
+        self.assertIn('under 240 seconds', instructions)
         self.assertIn('one bounded action', instructions)
         self.assertIn('do not bundle later steps', instructions)
         self.assertIn('remaining substeps', instructions)
