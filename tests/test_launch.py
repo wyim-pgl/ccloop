@@ -198,7 +198,7 @@ class LauncherTest(unittest.TestCase):
 
     def test_default_frontier_flags_reach_each_interactive_driver(self):
         expected = {
-            'claude': ['--model', 'fable', '--effort', 'max'],
+            'claude': ['--model', 'opus', '--effort', 'max'],
             'codex': ['--model', 'gpt-6-astra', '-c', 'model_reasoning_effort="max"'],
             'kimi': ['--model', 'kimi-code/k3', '--thinking', '--prompt'],
         }
@@ -218,7 +218,7 @@ class LauncherTest(unittest.TestCase):
                 else:
                     self.assertIn(str(SKILL), prompt)
                     self.assertIn('Read', prompt)
-        for model in ('fable', 'gpt-6-astra', 'kimi-code/k3'):
+        for model in ('opus', 'gpt-6-astra', 'kimi-code/k3'):
                     self.assertIn(model, prompt)
 
     def test_goal_is_one_verbatim_argument_without_shell_expansion(self):
@@ -367,9 +367,9 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(plan['driver'], 'claude')
         self.assertEqual(plan['requested_driver'], 'claude')
         self.assertEqual(plan['argv'][:-1], [str(self.executables['claude']),
-                         '--model', 'fable', '--effort', 'max'])
+                         '--model', 'opus', '--effort', 'max'])
         self.assertEqual(plan['project'], str(self.project))
-        self.assertEqual(plan['models'], {'claude': 'fable',
+        self.assertEqual(plan['models'], {'claude': 'opus',
                                          'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'})
         self.assertFalse(plan['fallback'])
         self.assertTrue(plan['available'])
@@ -432,8 +432,8 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(probe['argv'][probe['argv'].index('--tools') + 1], '')
         evidence = [json.loads(line.split(': ', 1)[1]) for line in result.stderr.splitlines()
                     if line.startswith('ccloop readiness: ')]
-        self.assertEqual(evidence[0]['requested_model'], 'fable')
-        self.assertEqual(evidence[0]['observed_models'], ['fable'])
+        self.assertEqual(evidence[0]['requested_model'], 'opus')
+        self.assertEqual(evidence[0]['observed_models'], ['opus'])
 
     def test_startup_access_failure_uses_kimi_before_any_primary_interactive_session(self):
         self.env['LAUNCH_TEST_PROBE_CODEX'] = 'access'

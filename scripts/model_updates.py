@@ -117,9 +117,9 @@ def _version(value):
 
 def _identity(provider, model, backend=None):
     if provider == 'claude':
-        if model == 'fable':
-            # Claude Code resolves this stable alias to the newest provider-supported Fable.
-            return 'fable', (10**9,)
+        if model in {'fable', 'opus'}:
+            # Claude Code resolves these stable aliases to the newest provider-supported model.
+            return model, (10**9,)
         match = re.fullmatch(r'claude-(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)(?:\[1m\])?', model)
         if match:
             parts = _version(match[2])
@@ -141,9 +141,9 @@ def _identity(provider, model, backend=None):
 def _upgrade(provider, candidate, existing, backends=None):
     if candidate == existing:
         return True
-    if provider == 'claude' and candidate == 'fable':
+    if provider == 'claude' and candidate in {'fable', 'opus'}:
         # A cache entry for the dynamic alias must not replace an explicit version pin.
-        return existing == 'fable'
+        return existing == candidate
     backends = backends or {}
     new = _identity(provider, candidate, backends.get(candidate))
     old = _identity(provider, existing, backends.get(existing))
@@ -162,12 +162,11 @@ def _upgrade(provider, candidate, existing, backends=None):
     return False
 
 
-def _claude(document):
-    candidates = re.findall(r'\bclaude-(?:fable|opus)-\d+(?:-\d+)*\b', document)
+def _claude(document, family='fable'):
+    candidates = re.findall(r'\bclaude-' + re.escape(family) + r'-\d+(?:-\d+)*\b', document)
     if not candidates:
         return None
-    return max(candidates, key=lambda model: (
-        _identity('claude', model)[0] == 'fable', _identity('claude', model)[1]))
+    return max(candidates, key=lambda model: _identity('claude', model)[1])
 
 
 def _codex(document):
@@ -352,7 +351,7 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
     def accept(provider, candidate, source, evidence, backend=None):
         if not candidate:
             return
-        if provider == 'claude' and models[provider] == 'fable':
+        if provider == 'claude' and models[provider] in {'fable', 'opus'}:
             # Keep the dynamic CLI alias; retain exact documentation IDs as selection evidence.
             sources[provider] = [{'source': source, 'model': candidate, 'checked_at': now,
                                  'evidence': evidence}]
@@ -369,8 +368,10 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
     for provider, document in documents.items():
         candidate = None
         if provider == 'claude':
-            candidate = _claude(document)
-            accept(provider, candidate, SOURCES[provider], 'Highest documented Fable version, otherwise Opus.')
+            family = 'opus' if models[provider] == 'opus' or \
+                (_identity('claude', models[provider]) or (None,))[0] == 'opus' else 'fable'
+            candidate = _claude(document, family)
+            accept(provider, candidate, SOURCES[provider], 'Latest documented version of the selected Claude family.')
         elif provider == 'codex':
             candidate = _codex(document)
             accept(provider, candidate, SOURCES[provider], 'Exact ID beside an official strongest-capability statement.')

@@ -278,17 +278,17 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual(self.state()['managed']['context_policy'],'fresh-per-turn-no-measurement')
         self.assertTrue(all('--dangerously-skip-permissions' not in c['argv'] for c in work))
 
-    def test_claude_fable_alias_accepts_and_records_current_resolved_model(self):
+    def test_claude_opus_alias_accepts_and_records_current_resolved_model(self):
         import shutil
         shutil.rmtree(self.root)
-        self.models['claude'] = 'fable'
+        self.models['claude'] = 'opus'
         self.init('claude')
-        self.settings(statuses=['complete'], observed_model='claude-fable-5-5')
+        self.settings(statuses=['complete'], observed_model='claude-opus-5-5')
         code, _, error = self.run_manager('claude')
         self.assertEqual(code, 0, error)
         self.assertEqual(self.state()['phase'], 'complete')
-        self.assertEqual(self.state()['managed']['last_native']['requested_model'], 'fable')
-        self.assertEqual(self.state()['managed']['last_native']['observed_models'], ['claude-fable-5-5'])
+        self.assertEqual(self.state()['managed']['last_native']['requested_model'], 'opus')
+        self.assertEqual(self.state()['managed']['last_native']['observed_models'], ['claude-opus-5-5'])
 
     def test_question_answer_enters_next_turn_and_never_completes_run(self):
         self.settings(statuses=['question','complete'])

@@ -12,7 +12,7 @@ import kimi_runtime
 import runtime_paths
 
 
-MODELS = {'claude': 'fable', 'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'}
+MODELS = {'claude': 'opus', 'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'}
 FENCE = re.compile(r'```(?:json)?\s*\n(.*?)\n```', re.DOTALL)
 ACCESS = re.compile(
     r'\bauth\.(?:login_required|provisioning_required|token_missing|token_unauthorized|model_not_resolved)\b|'
@@ -36,8 +36,9 @@ def model_matches(provider, requested, observed):
     """Check exact pins while accepting provider-resolved Claude frontier aliases."""
     if requested == observed:
         return True
-    if provider == 'claude' and requested == 'fable':
-        return bool(re.fullmatch(r'claude-fable-\d+(?:-\d+)*', observed))
+    if provider == 'claude' and requested in {'fable', 'opus'}:
+        family = requested
+        return bool(re.fullmatch(r'claude-' + family + r'-\d+(?:-\d+)*', observed))
     return requested == observed
 
 

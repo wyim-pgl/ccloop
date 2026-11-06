@@ -32,8 +32,8 @@ class ModelUpdatesTest(unittest.TestCase):
         self.now = mock.patch.object(self.module.time, 'time', return_value=10000.0).start()
         self.fetch = mock.patch.object(self.module, '_fetch', side_effect=self.document).start()
         self.docs = {
-            'claude': 'Fable is our most capable model: `claude-fable-5-1`. '
-                      'Use `claude-sonnet-9-9` for fast daily work.',
+            'claude': 'Opus is our most capable model: `claude-opus-5-5`. '
+                      'Use `claude-sonnet-5-5` for daily work.',
             'codex': '<h2>Astra</h2><p>Our most capable model for complex work.</p>'
                      '<code>codex -m gpt-6-astra</code>'
                      '<h2>6.1 Sol</h2><p>Balanced speed and cost.</p>'
@@ -75,12 +75,12 @@ class ModelUpdatesTest(unittest.TestCase):
                 self.assertTrue(result['sources'][provider])
 
     def test_refreshes_new_frontier_versions_and_configured_kimi_alias(self):
-        self.docs['claude'] = 'Our most capable: claude-fable-5-2. Older claude-fable-5-1.'
+        self.docs['claude'] = 'Our most capable: claude-opus-5-6. Older claude-opus-5-5.'
         self.docs['codex'] = 'Our most capable model: `gpt-7-astra`. Fast: `gpt-8-luna`.'
         self.docs['kimi'] = 'default_model = "kimi-code/k4"'
         self.write_kimi({'kimi-code/k3': 'k3', 'private-k4': 'k4'})
         result = self.module.resolve_models()
-        expected = {'claude': 'fable', 'codex': 'gpt-7-astra', 'kimi': 'private-k4'}
+        expected = {'claude': 'opus', 'codex': 'gpt-7-astra', 'kimi': 'private-k4'}
         for provider, model in expected.items():
             with self.subTest(provider=provider):
                 if provider == 'kimi' and not HAS_TOMLLIB:
@@ -96,7 +96,7 @@ class ModelUpdatesTest(unittest.TestCase):
                          'kimi-code/k3.1-pro-highspeed': 'k3.1-pro-highspeed'})
         self.docs['kimi'] = 'default_model = "kimi-code/k3"'
         result = self.module.resolve_models()
-        self.assertEqual(result['models']['claude'], 'fable')
+        self.assertEqual(result['models']['claude'], 'opus')
         self.assertEqual(result['models']['kimi'], 'kimi-code/k3.1-pro')
 
     def test_unconfigured_new_kimi_alias_is_not_invented(self):
@@ -186,19 +186,19 @@ class ModelUpdatesTest(unittest.TestCase):
         self.assertEqual(empty['models'], self.module.MODELS)
         self.assertFalse(self.cache.exists())
         self.fetch.assert_not_called()
-        self.docs['claude'] = 'claude-fable-5-2 is our most capable model.'
+        self.docs['claude'] = 'claude-opus-5-6 is our most capable model.'
         self.module.resolve_models()
         contents = self.cache.read_bytes()
         self.fetch.reset_mock()
         self.now.return_value = 99999.0
         result = self.module.resolve_models(offline=True, force=True)
-        self.assertEqual(result['models']['claude'], 'fable')
+        self.assertEqual(result['models']['claude'], 'opus')
         self.assertFalse(result['refreshed'])
         self.assertEqual(self.cache.read_bytes(), contents)
         self.fetch.assert_not_called()
 
     def test_stale_or_down_metadata_never_downgrades_known_frontier(self):
-        current = {'claude': 'claude-fable-5-2', 'codex': 'gpt-7-astra', 'kimi': 'kimi-code/k3'}
+        current = {'claude': 'claude-opus-5-5', 'codex': 'gpt-7-astra', 'kimi': 'kimi-code/k3'}
         result = self.module.resolve_models(current)
         self.assertEqual(result['models'], current)
         self.assertTrue(any('older' in x or 'downgrade' in x for x in result['warnings']))
@@ -235,8 +235,8 @@ class ModelUpdatesTest(unittest.TestCase):
 
     def test_current_newer_than_fresh_cache_is_preserved(self):
         self.module.resolve_models()
-        result = self.module.resolve_models({'claude': 'claude-fable-6-1'})
-        self.assertEqual(result['models']['claude'], 'claude-fable-6-1')
+        result = self.module.resolve_models({'claude': 'claude-opus-5-6'})
+        self.assertEqual(result['models']['claude'], 'claude-opus-5-6')
         self.assertEqual(self.fetch.call_count, 3)
 
     def test_cache_is_private_and_atomic_replace_failure_keeps_previous_file(self):

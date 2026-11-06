@@ -12,10 +12,15 @@ import providers
 
 
 class ProviderBoundaryTest(fixtures.CLIBase):
-    def test_claude_dynamic_frontier_alias_accepts_the_resolved_fable_model(self):
+    def test_claude_dynamic_fable_alias_accepts_the_resolved_fable_model(self):
         self.assertTrue(providers.model_matches('claude', 'fable', 'claude-fable-5-5'))
         self.assertFalse(providers.model_matches('claude', 'fable', 'claude-opus-5-5'))
         self.assertFalse(providers.model_matches('claude', 'claude-fable-5-1', 'claude-fable-5-5'))
+
+    def test_claude_dynamic_opus_alias_accepts_the_resolved_opus_model(self):
+        self.assertTrue(providers.model_matches('claude', 'opus', 'claude-opus-5-5'))
+        self.assertFalse(providers.model_matches('claude', 'opus', 'claude-fable-5-5'))
+        self.assertFalse(providers.model_matches('claude', 'claude-opus-5-5', 'claude-opus-5-6'))
 
     def test_claude_disables_tools_mcp_hooks_and_parses_structured_output(self):
         self.env['CLAUDECODE'] = '1'
@@ -29,8 +34,8 @@ class ProviderBoundaryTest(fixtures.CLIBase):
         self.assertEqual(args[args.index('--tools') + 1], '')
         self.assertEqual(json.loads(args[args.index('--mcp-config') + 1]), {'mcpServers': {}})
         self.assertEqual(args[args.index('--permission-mode') + 1], 'dontAsk')
-        self.assertEqual(s['last_attempts'][0]['requested_model'], 'fable')
-        self.assertEqual(s['last_attempts'][0]['observed_models'], ['fable'])
+        self.assertEqual(s['last_attempts'][0]['requested_model'], 'opus')
+        self.assertEqual(s['last_attempts'][0]['observed_models'], ['opus'])
         self.assertIsNone(self.calls()[0]['claudecode'])
         self.assertEqual(self.calls()[0]['reviewer'], '1')
 

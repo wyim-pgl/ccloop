@@ -9,7 +9,7 @@ access to a selected model.
 
 | Participant | Current default | Reasoning | Verification |
 | --- | --- | --- | --- |
-| Claude Code | `fable` | `max` | Dynamic Claude Code alias; `modelUsage` keys identify the resolved model. |
+| Claude Code | `opus` | `max` | Dynamic Claude Code alias for the latest Opus; `modelUsage` identifies the resolved version. |
 | Codex | `gpt-6-astra` | `max` | Explicit model flag; current CLI JSON events do not always expose the returned model. |
 | Kimi Code | Newest configured K-series alias | Maximum supported thinking | Selected from the local Kimi Code catalog; selected alias is separate from served-model observation, which may remain unknown. |
 

@@ -148,9 +148,10 @@ python3 scripts/launch.py --driver kimi --project /work/project \
   --goal 'The original goal' --root /work/private-supervisor
 ```
 
-Current defaults, verified 2026-10-20: Claude `claude-fable-5-1` / `max`, Codex
-`gpt-6-astra` / `max`, Kimi `kimi-code/k3` / thinking. Explicit launcher model
-overrides pin a chosen profile; omit them for automatic updates. See
+Current defaults, verified 2026-11-06: Claude `opus` (the newest provider-supported
+Opus) / `max`, Codex `gpt-6-astra` / `max`, and the newest configured Kimi Code
+K-series alias / thinking. Explicit launcher model overrides pin a chosen profile;
+omit them for automatic updates. See
 [model selection and sources](references/models.md).
 
 ## What happens during the loop
