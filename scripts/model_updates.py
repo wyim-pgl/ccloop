@@ -149,6 +149,8 @@ def _upgrade(provider, candidate, existing, backends=None):
     old = _identity(provider, existing, backends.get(existing))
     if new is None or old is None:
         return False  # Preserve unknown/custom selections instead of guessing.
+    if provider == 'claude' and existing == 'opus' and new[0] == 'fable':
+        return False
     if new[0] == old[0]:
         return new[1] >= old[1]
     if provider == 'claude':
@@ -303,6 +305,9 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
     models = dict(MODELS)
     for provider, model in (current or {}).items():
         if provider in MODELS and isinstance(model, str) and MODEL_ID.fullmatch(model):
+            if provider == 'claude' and (_identity('claude', model) or (None,))[0] == 'fable':
+                # Fable was the prior automatic default; Opus is now the selected default family.
+                continue
             models[provider] = model
     warnings = []
     configured = _local_kimi(warnings)

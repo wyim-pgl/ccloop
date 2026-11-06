@@ -99,6 +99,12 @@ class ModelUpdatesTest(unittest.TestCase):
         self.assertEqual(result['models']['claude'], 'opus')
         self.assertEqual(result['models']['kimi'], 'kimi-code/k3.1-pro')
 
+    def test_auto_refresh_moves_previous_fable_profile_to_dynamic_opus(self):
+        self.docs['claude'] = ('Opus is our strongest model: claude-opus-5-5. '
+                               'Fable is claude-fable-5-1.')
+        result = self.module.resolve_models({'claude': 'claude-fable-5-1'}, force=True)
+        self.assertEqual(result['models']['claude'], 'opus')
+
     def test_unconfigured_new_kimi_alias_is_not_invented(self):
         self.docs['kimi'] = 'default_model = "kimi-code/k4"'
         result = self.module.resolve_models()
