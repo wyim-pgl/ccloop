@@ -57,7 +57,7 @@ class JournalTest(fixtures.CLIBase):
                 self.assertIn(self.state()['config']['models'][peer], text)
                 self.assertIn('Observed model', text)
                 self.assertIn('accepted', text)
-                self.assertIn('unverified' if peer == 'codex' else 'claude-fable-5-1', text)
+                self.assertIn('unverified' if peer == 'codex' else 'fable', text)
 
     def test_record_links_answer_to_driver_work_without_completing_goal(self):
         self.init()

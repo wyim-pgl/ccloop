@@ -1,6 +1,6 @@
 # Frontier model selection
 
-Verified on 2026-10-20 against official documentation and the installed CLIs.
+Verified on 2026-11-06 against official model-selection documentation and the installed CLIs.
 With `auto_update_models: true` (default), initialization and new launches refresh
 the strongest model profile from official metadata and local model lists. Active
 reviewer calls refresh the profile when its cache is due. Metadata is cached for
@@ -9,9 +9,9 @@ access to a selected model.
 
 | Participant | Current default | Reasoning | Verification |
 | --- | --- | --- | --- |
-| Claude Code | `claude-fable-5-1` | `max` | `modelUsage` keys in the CLI JSON result identify actual model usage. |
+| Claude Code | `fable` | `max` | Dynamic Claude Code alias; `modelUsage` keys identify the resolved model. |
 | Codex | `gpt-6-astra` | `max` | Explicit model flag; current CLI JSON events do not always expose the returned model. |
-| Kimi Code | `kimi-code/k3` | maximum supported thinking | Official Code CLI; selected alias is separate from served-model observation, which may remain unknown. |
+| Kimi Code | Newest configured K-series alias | Maximum supported thinking | Selected from the local Kimi Code catalog; selected alias is separate from served-model observation, which may remain unknown. |
 
 `max` keeps Codex focused on the consultation; `ultra` enables automatic task
 delegation. The strongest Claude model can have different entitlement or credit
@@ -70,6 +70,10 @@ Original Code credentials are referenced locally; Python OAuth tokens are not
 copied or migrated by ccloop. If Code is not logged in, use `kimi-code login` on
 that computer. Model aliases and cached aliases are checked against the selected
 client's config. An old Python-only cache cannot select a missing Code alias.
+For peer calls, ccloop ranks configured K-series model aliases at profile refresh;
+it does not start a second Kimi CLI process to discover models. Newer models must
+first appear in that computer's Code model catalog. A same-version `highspeed`
+alias is not ranked above the standard model.
 Python 3.11+ uses stdlib TOML parsing; Python 3.10 can use optional `tomli` without
 changing the Kimi Code client itself.
 

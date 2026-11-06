@@ -496,7 +496,8 @@ class Native:
         if value.get('is_error'):
             error = str(value.get('result') or diagnostics or 'Claude result reported an error')
             raise DriverError(error, 'access' if providers.ACCESS.search(error) else 'provider')
-        if any(model != self.job['model'] for model in self.details['observed_models']):
+        if any(not providers.model_matches('claude', self.job['model'], model)
+               for model in self.details['observed_models']):
             raise DriverError('Claude served a different model than requested', 'access')
         result = value.get('structured_output', value.get('result'))
         return json.loads(result) if isinstance(result, str) else result

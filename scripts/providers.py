@@ -12,7 +12,7 @@ import kimi_runtime
 import runtime_paths
 
 
-MODELS = {'claude': 'claude-fable-5-1', 'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'}
+MODELS = {'claude': 'fable', 'codex': 'gpt-6-astra', 'kimi': 'kimi-code/k3'}
 FENCE = re.compile(r'```(?:json)?\s*\n(.*?)\n```', re.DOTALL)
 ACCESS = re.compile(
     r'\bauth\.(?:login_required|provisioning_required|token_missing|token_unauthorized|model_not_resolved)\b|'
@@ -30,6 +30,15 @@ class ProviderError(ValueError):
     def __init__(self, message, kind='invalid'):
         super().__init__(message)
         self.kind = kind
+
+
+def model_matches(provider, requested, observed):
+    """Check exact pins while accepting provider-resolved Claude frontier aliases."""
+    if requested == observed:
+        return True
+    if provider == 'claude' and requested == 'fable':
+        return bool(re.fullmatch(r'claude-fable-\d+(?:-\d+)*', observed))
+    return requested == observed
 
 
 def kimi_preflight():
@@ -219,7 +228,8 @@ def parse_response(provider, stdout, attempt):
                               if isinstance(block, dict) and block.get('type') == 'text')
                               if isinstance(content, list) else content)
     attempt['observed_models'] = sorted(set(attempt['observed_models']))
-    if provider == 'claude' and any(model != attempt['requested_model'] for model in attempt['observed_models']):
+    if provider == 'claude' and any(not model_matches(provider, attempt['requested_model'], model)
+                                    for model in attempt['observed_models']):
         attempt['model_mismatch'] = True
         raise ProviderError('Selected Claude model was not served; observed: ' + ', '.join(attempt['observed_models']), 'access')
     if isinstance(report, str):

@@ -71,7 +71,8 @@ if provider=='claude':
     if settings.get('native_trace') and sys.argv[sys.argv.index('--output-format')+1]=='stream-json':
         emit(dict(type='assistant',message=dict(role='assistant',content=[dict(type='tool_use',id='read-1',name='Read',input=dict(file_path='artifact.txt'))])))
         emit(dict(type='user',message=dict(role='user',content=[dict(type='tool_result',tool_use_id='read-1',content='ACTUAL_NATIVE_TRACE '+(base/'project'/'artifact.txt').read_text())])))
-    emit(dict(type='result',is_error=False,structured_output=value,modelUsage={sys.argv[sys.argv.index('--model')+1]:dict(inputTokens=999999999)},session_id='claude-session'))
+    model=settings.get('observed_model',sys.argv[sys.argv.index('--model')+1])
+    emit(dict(type='result',is_error=False,structured_output=value,modelUsage={model:dict(inputTokens=999999999)},session_id='claude-session'))
     sys.exit(settings.get('exit_code',0))
 for line in sys.stdin:
     msg=json.loads(line);method=msg.get('method');p=msg.get('params',{})
@@ -276,6 +277,18 @@ class ManagedTests(unittest.TestCase):
         self.assertTrue(all('--resume' not in c['argv'] and '--continue' not in c['argv'] for c in work))
         self.assertEqual(self.state()['managed']['context_policy'],'fresh-per-turn-no-measurement')
         self.assertTrue(all('--dangerously-skip-permissions' not in c['argv'] for c in work))
+
+    def test_claude_fable_alias_accepts_and_records_current_resolved_model(self):
+        import shutil
+        shutil.rmtree(self.root)
+        self.models['claude'] = 'fable'
+        self.init('claude')
+        self.settings(statuses=['complete'], observed_model='claude-fable-5-5')
+        code, _, error = self.run_manager('claude')
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.state()['phase'], 'complete')
+        self.assertEqual(self.state()['managed']['last_native']['requested_model'], 'fable')
+        self.assertEqual(self.state()['managed']['last_native']['observed_models'], ['claude-fable-5-5'])
 
     def test_question_answer_enters_next_turn_and_never_completes_run(self):
         self.settings(statuses=['question','complete'])

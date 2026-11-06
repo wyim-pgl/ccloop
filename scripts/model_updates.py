@@ -117,6 +117,9 @@ def _version(value):
 
 def _identity(provider, model, backend=None):
     if provider == 'claude':
+        if model == 'fable':
+            # Claude Code resolves this stable alias to the newest provider-supported Fable.
+            return 'fable', (10**9,)
         match = re.fullmatch(r'claude-(fable|opus|sonnet|haiku)-(\d+(?:-\d+)*)(?:\[1m\])?', model)
         if match:
             parts = _version(match[2])
@@ -128,15 +131,19 @@ def _identity(provider, model, backend=None):
         if match:
             return match[2] or '', _version(match[1])
     else:
-        match = re.fullmatch(r'(?:kimi-code/)?k(\d+(?:[.-]\d+)?)', backend or model)
+        match = re.fullmatch(r'(?:kimi-code/)?k(\d+(?:[.-]\d+)?)(?:-(pro))?(?:-highspeed)?', backend or model)
         if match:
-            return 'k', _version(match[1])
+            version = _version(match[1])
+            return 'k', version + ((1,) if match[2] else ())
     return None
 
 
 def _upgrade(provider, candidate, existing, backends=None):
     if candidate == existing:
         return True
+    if provider == 'claude' and candidate == 'fable':
+        # A cache entry for the dynamic alias must not replace an explicit version pin.
+        return existing == 'fable'
     backends = backends or {}
     new = _identity(provider, candidate, backends.get(candidate))
     old = _identity(provider, existing, backends.get(existing))
@@ -321,6 +328,18 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
             models[provider] = model
             sources[provider] = cached['sources'][provider]
     now = time.time()
+    if configured:
+        def configured_key(alias):
+            backend = configured[alias]
+            identity = _identity('kimi', alias, backend)
+            return identity[1], 'highspeed' not in (alias + ' ' + backend).casefold()
+
+        selected = max(configured, key=configured_key)
+        if _upgrade('kimi', selected, models['kimi'], backends):
+            models['kimi'] = selected
+            sources['kimi'] = [{'source': str(_kimi_config_path()), 'model': selected,
+                                'backend': configured[selected], 'checked_at': now,
+                                'evidence': 'Highest configured K-series backend in the selected Kimi Code profile.'}]
     checked = cached.get('checked_at', 0.0)
     fresh = bool(cached) and 0 <= now - checked < ttl_seconds
     if offline or (fresh and not force):
@@ -332,6 +351,11 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
 
     def accept(provider, candidate, source, evidence, backend=None):
         if not candidate:
+            return
+        if provider == 'claude' and models[provider] == 'fable':
+            # Keep the dynamic CLI alias; retain exact documentation IDs as selection evidence.
+            sources[provider] = [{'source': source, 'model': candidate, 'checked_at': now,
+                                 'evidence': evidence}]
             return
         if not _upgrade(provider, candidate, models[provider], backends):
             warnings.append(f'{provider}: ignored older or incomparable metadata to avoid a model downgrade.')
@@ -351,14 +375,16 @@ def resolve_models(current=None, *, force=False, offline=False, cache_path=None,
             candidate = _codex(document)
             accept(provider, candidate, SOURCES[provider], 'Exact ID beside an official strongest-capability statement.')
         else:
-            match = re.search(r'default_model\s*=\s*[\"\'](kimi-code/k\d+(?:[.-]\d+)?)[\"\']', _plain(document))
+            match = re.search(r'default_model\s*=\s*[\"\'](kimi-code/k\d+(?:[.-]\d+)?(?:-pro)?)[\"\']',
+                              _plain(document))
             candidate = match[1] if match else None
             if candidate and configured:
                 target = _identity('kimi', candidate)[1]
                 matches = [alias for alias, backend in configured.items()
                            if _identity('kimi', alias, backend)[1] == target]
                 if matches:
-                    selected = candidate if candidate in matches else sorted(matches)[0]
+                    selected = max(matches, key=lambda alias: (target,
+                        'highspeed' not in (alias + ' ' + configured[alias]).casefold()))
                     accept('kimi', selected, SOURCES['kimi'], 'Official default backend matches a configured CLI alias.',
                            configured[selected])
                 else:

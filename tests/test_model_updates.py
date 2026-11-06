@@ -80,7 +80,7 @@ class ModelUpdatesTest(unittest.TestCase):
         self.docs['kimi'] = 'default_model = "kimi-code/k4"'
         self.write_kimi({'kimi-code/k3': 'k3', 'private-k4': 'k4'})
         result = self.module.resolve_models()
-        expected = {'claude': 'claude-fable-5-2', 'codex': 'gpt-7-astra', 'kimi': 'private-k4'}
+        expected = {'claude': 'fable', 'codex': 'gpt-7-astra', 'kimi': 'private-k4'}
         for provider, model in expected.items():
             with self.subTest(provider=provider):
                 if provider == 'kimi' and not HAS_TOMLLIB:
@@ -88,6 +88,16 @@ class ModelUpdatesTest(unittest.TestCase):
                 self.assertEqual(result['models'][provider], model)
         self.assertNotIn('secret-must-never-appear', json.dumps(result))
         self.assertNotIn('secret-must-never-appear', self.cache.read_text())
+
+    @unittest.skipUnless(HAS_TOMLLIB, TOMLLIB_REQUIREMENT)
+    def test_frontier_selection_uses_dynamic_claude_alias_and_best_configured_kimi_tier(self):
+        self.write_kimi({'kimi-code/k3': 'k3',
+                         'kimi-code/k3.1-pro': 'k3.1-pro',
+                         'kimi-code/k3.1-pro-highspeed': 'k3.1-pro-highspeed'})
+        self.docs['kimi'] = 'default_model = "kimi-code/k3"'
+        result = self.module.resolve_models()
+        self.assertEqual(result['models']['claude'], 'fable')
+        self.assertEqual(result['models']['kimi'], 'kimi-code/k3.1-pro')
 
     def test_unconfigured_new_kimi_alias_is_not_invented(self):
         self.docs['kimi'] = 'default_model = "kimi-code/k4"'
@@ -182,7 +192,7 @@ class ModelUpdatesTest(unittest.TestCase):
         self.fetch.reset_mock()
         self.now.return_value = 99999.0
         result = self.module.resolve_models(offline=True, force=True)
-        self.assertEqual(result['models']['claude'], 'claude-fable-5-2')
+        self.assertEqual(result['models']['claude'], 'fable')
         self.assertFalse(result['refreshed'])
         self.assertEqual(self.cache.read_bytes(), contents)
         self.fetch.assert_not_called()
@@ -193,7 +203,7 @@ class ModelUpdatesTest(unittest.TestCase):
         self.assertEqual(result['models'], current)
         self.assertTrue(any('older' in x or 'downgrade' in x for x in result['warnings']))
         self.fetch.side_effect = OSError('secret-must-never-appear')
-        result = self.module.resolve_models(force=True)
+        result = self.module.resolve_models(current, force=True)
         self.assertEqual(result['models'], current)
         self.assertNotIn('secret-must-never-appear', json.dumps(result))
         self.assertTrue(result['warnings'])
