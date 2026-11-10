@@ -104,7 +104,7 @@ def command(provider, config, temporary):
     if provider == 'codex':
         return prefix + ['-a', 'never', 'exec', '--ignore-user-config', '--ignore-rules',
             '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--model', model,
-            '-c', 'model_reasoning_effort="max"', '--disable', 'shell_tool', '--json', '-']
+            '-c', 'model_reasoning_effort="high"', '--disable', 'shell_tool', '--json', '-']
     kimi_preflight()
     (temporary / 'system.md').write_text(
         'You are an independent, tool-free reviewer. Read the supplied JSON packet and return '

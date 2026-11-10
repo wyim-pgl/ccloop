@@ -22,8 +22,8 @@ import providers
 
 
 DEFAULTS = {'max_rounds': None, 'max_hours': None, 'max_no_progress_reviews': None,
-            'timeout_seconds': 300, 'review_interval_minutes': 30, 'auto_update_models': True,
-            'watch_exclude': []}
+            'timeout_seconds': 300, 'review_interval_minutes': 30, 'review_every_turns': None,
+            'auto_update_models': True, 'watch_exclude': []}
 OPTIONAL_LIMITS = ('max_rounds', 'max_hours', 'max_no_progress_reviews')
 MODEL_METADATA_TTL = 1800
 MAX_QUARANTINE = 200
@@ -48,6 +48,9 @@ def validate_config(value, root):
         del c[key]
     require(not Path(c['project']).is_relative_to(root), 'Ledger and project directories must be separate')
     require(not root.is_relative_to(Path(__file__).resolve().parent.parent), 'Keep run state outside the skill directory')
+    turns = c['review_every_turns']
+    require(turns is None or (type(turns) is int and turns > 0),
+            'review_every_turns must be a positive integer or null')
     for key in ('timeout_seconds', 'review_interval_minutes'):
         value = c[key]
         require(type(value) in (int, float) and math.isfinite(value) and value > 0,
@@ -125,8 +128,14 @@ def summary(s):
     result['dispatch_limit'] = limit(s)
     result['last_review_at'] = s.get('last_review_at')
     result['next_review_at'] = s.get('next_review_at', s['created_at'])
-    result['review_due'] = bool(s['enabled'] and not result['dispatch_limit']
-                                and time.time() >= result['next_review_at'])
+    every = s['config'].get('review_every_turns')
+    if every and s.get('last_review'):
+        # Managed runs may pace milestone reviews by completed work turns instead of wall-clock time.
+        manager = s.get('managed') or {}
+        due = manager.get('turn_count', 0) - manager.get('review_turn_mark', 0) >= every
+    else:
+        due = time.time() >= result['next_review_at']
+    result['review_due'] = bool(s['enabled'] and not result['dispatch_limit'] and due)
     return result
 
 

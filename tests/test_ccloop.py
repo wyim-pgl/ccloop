@@ -300,6 +300,30 @@ class ConsultationTest(CLIBase):
         self.assertEqual(done['phase'], 'complete')
         self.assertFalse(done['review_due'])
 
+    def test_review_every_turns_replaces_the_time_interval_after_the_first_review(self):
+        self.init(review_every_turns=3)
+        plan = self.consult(stage='plan')
+        self.assertEqual(plan['config']['review_every_turns'], 3)
+        code = ('import json,pathlib,sys; sys.path.insert(0,sys.argv[1]); import ccloop\n'
+                's=json.loads(pathlib.Path(sys.argv[2]).read_text()); s["next_review_at"]=0\n'
+                'due=[]\n'
+                'for turns in (0, 2, 3):\n'
+                '    s["managed"]={"turn_count": 10+turns, "review_turn_mark": 10}\n'
+                '    due.append(ccloop.summary(s)["review_due"])\n'
+                'print(json.dumps(due))')
+        result = subprocess.run([sys.executable, '-c', code, str(SCRIPT.parent), str(self.root / 'state.json')],
+                                env=self.env, cwd=self.base, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [False, False, True])
+
+    def test_review_every_turns_must_be_a_positive_integer(self):
+        for bad in (0, -1, 1.5, 'ten'):
+            self.config.update(review_every_turns=bad)
+            result = subprocess.run(self.command('init', config=self.write('config.json', self.config)),
+                                    env=self.env, cwd=self.base, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn('review_every_turns', result.stderr)
+
     def test_heartbeat_preserves_original_goal_without_dispatching(self):
         self.init()
         result = subprocess.run(self.command('heartbeat'), env=self.env, cwd=self.base,

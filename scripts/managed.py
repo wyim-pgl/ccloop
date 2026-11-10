@@ -442,6 +442,7 @@ def schedule_review(root, state):
         manager['action'] = {'id': secrets.token_hex(12), 'kind': 'plan' if not current.get('last_review') else 'milestone',
                              'after_round': current['round'],
                              'directory': str(root / 'managed' / manager['last_turn']) if manager.get('last_turn') else None}
+        manager['review_turn_mark'] = manager.get('turn_count', 0)
         (root / 'managed').mkdir(mode=0o700, exist_ok=True)
         ccloop.commit(root, current, 'managed_peer_intent', action_id=manager['action']['id'])
 

@@ -47,7 +47,7 @@ class ProviderBoundaryTest(fixtures.CLIBase):
             self.assertIn(flag, args)
         self.assertEqual(args[args.index('--sandbox') + 1], 'read-only')
         self.assertEqual(args[args.index('--disable') + 1], 'shell_tool')
-        self.assertEqual(args[args.index('-c') + 1], 'model_reasoning_effort="max"')
+        self.assertEqual(args[args.index('-c') + 1], 'model_reasoning_effort="high"')
         self.assertEqual(s['last_attempts'][0]['observed_models'], [])
         self.assertEqual(s['last_attempts'][0]['requested_model'], 'gpt-6-astra')
 
